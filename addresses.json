@@ -1,0 +1,14 @@
+{
+  "_comment": "Map friendly names to MadMapper OSC addresses. In MadMapper, right-click a parameter and choose Copy OSC Address, then paste it here. Keys starting with _ are ignored.",
+  "surfaces": {
+    "_comment": "Friendly name -> surface name as shown in MadMapper (becomes /surfaces/<Name>/opacity), or a full opacity address starting with /.",
+    "front wall": "FrontWall",
+    "left wall": "LeftWall",
+    "floor": "/surfaces/Floor/opacity"
+  },
+  "triggers": {
+    "_comment": "Friendly name -> full OSC address of a button, cue or scene control. Paste the address from Copy OSC Address.",
+    "intro scene": "/scenes/Intro/select",
+    "blackout": "/master/blackout"
+  }
+}

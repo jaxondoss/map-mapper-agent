@@ -60,3 +60,40 @@ def fade(
 def send_raw(osc: OscSender, address: str, args: list[OscArg] | None = None) -> str:
     osc.send(address, args or [])
     return f"Sent {address} {args or []}"
+
+
+def _send_parameter(osc: OscSender, book: AddressBook, library, name: str, value: float):
+    """Clamp to the shader's range, rescale if configured, and send."""
+    address = book.parameter_address(name)
+    spec = library.input(name) if library else None
+    if spec:
+        value = spec.clamp(value)
+        if book.parameter_scale == "normalized":
+            value = spec.normalize(value)
+    osc.send(address, value)
+    return address, value
+
+
+def set_parameter(osc: OscSender, book: AddressBook, library, name: str, value: float) -> str:
+    address, sent = _send_parameter(osc, book, library, name, value)
+    return f"Set {address} to {sent:g}"
+
+
+def apply_preset(osc: OscSender, book: AddressBook, library, name: str) -> str:
+    preset = library.get(name)
+    sent, missing = [], []
+    for param, value in preset.values.items():
+        try:
+            _send_parameter(osc, book, library, param, value)
+            sent.append(param)
+        except KeyError:
+            missing.append(param)
+    if not sent:
+        raise ValueError(
+            f"Preset '{preset.name}' sent nothing: none of its parameters have OSC "
+            f"addresses in addresses.json ({', '.join(missing)})"
+        )
+    result = f"Applied preset '{preset.name}' ({len(sent)} parameters)"
+    if missing:
+        result += f"; skipped unmapped parameters: {', '.join(missing)}"
+    return result

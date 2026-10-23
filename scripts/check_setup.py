@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 EXAMPLE_TRIGGERS = {"/scenes/Intro/select", "/master/blackout"}
+EXAMPLE_PARAM_PREFIX = "/materials/HandStringVisualizer/"
 
 failures: list[str] = []
 warnings: list[str] = []
@@ -62,19 +63,19 @@ def check_api_key() -> None:
         warn("ANTHROPIC_API_KEY is not set (needed for live runs; --dry-run still calls Claude)")
 
 
-def check_addresses(path: Path) -> None:
+def check_addresses(path: Path):
     from madmapper_agent.addresses import AddressBook
 
     if not path.exists():
         fail(f"{path} not found")
-        return
+        return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         book = AddressBook.from_dict(data)
     except (json.JSONDecodeError, AttributeError) as exc:
         fail(f"{path} is not valid: {exc}")
-        return
-    ok(f"{path.name}: {len(book.surfaces)} surfaces, {len(book.triggers)} triggers")
+        return None
+    ok(f"{path.name}: {len(book.surfaces)} surfaces, {len(book.triggers)} triggers, {len(book.parameters)} shader parameters")
 
     if not book.surfaces and not book.triggers:
         warn("addresses.json has no surfaces or triggers yet")
@@ -87,6 +88,41 @@ def check_addresses(path: Path) -> None:
             fail(f"trigger '{name}' address must start with '/': {address!r}")
     if EXAMPLE_TRIGGERS & set(book.triggers.values()):
         warn("addresses.json still has example trigger addresses; replace them with ones copied from MadMapper")
+    for name, address in book.parameters.items():
+        if not address.startswith("/"):
+            fail(f"parameter '{name}' address must start with '/': {address!r}")
+    if any(a.startswith(EXAMPLE_PARAM_PREFIX) for a in book.parameters.values()):
+        warn("shader parameter addresses are still the guessed examples; copy the real ones from MadMapper")
+    if book.parameter_scale not in ("raw", "normalized"):
+        fail(f"parameter_scale must be 'raw' or 'normalized', not {book.parameter_scale!r}")
+    return book
+
+
+def check_presets(path: Path, book) -> None:
+    from madmapper_agent.presets import PresetLibrary
+
+    if not path.exists():
+        warn(f"{path.name} not found; presets are disabled")
+        return
+    try:
+        library = PresetLibrary.load(path)
+    except (OSError, ValueError, KeyError) as exc:
+        fail(f"{path.name} is not valid: {exc}")
+        return
+    ok(f"{path.name}: {len(library.presets)} presets for {len(library.inputs)} shader parameters")
+    used = set()
+    for preset in library.presets.values():
+        for name, value in preset.values.items():
+            used.add(name.lower())
+            spec = library.input(name)
+            if spec is None:
+                fail(f"preset '{preset.name}' sets unknown shader parameter '{name}'")
+            elif spec.clamp(value) != value:
+                fail(f"preset '{preset.name}': {name}={value} is outside the shader's range")
+    if book is not None:
+        unmapped = sorted(n for n in used if n not in book.parameters)
+        if unmapped:
+            warn(f"presets use parameters with no OSC address in addresses.json: {', '.join(unmapped)}")
 
 
 def check_udp(host: str, port: int) -> None:
@@ -108,6 +144,7 @@ def main() -> int:
 
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--addresses", default=str(ROOT / "addresses.json"))
+    p.add_argument("--presets", default=str(ROOT / "presets.json"))
     p.add_argument("--host", default=DEFAULT_HOST)
     p.add_argument("--port", type=int, default=DEFAULT_PORT)
     args = p.parse_args()
@@ -117,7 +154,8 @@ def main() -> int:
     check_imports()
     check_api_key()
     if not failures:
-        check_addresses(Path(args.addresses))
+        book = check_addresses(Path(args.addresses))
+        check_presets(Path(args.presets), book)
     check_udp(args.host, args.port)
 
     print(f"\n{len(failures)} failure(s), {len(warnings)} warning(s)")

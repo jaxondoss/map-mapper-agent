@@ -10,5 +10,22 @@
     "_comment": "Friendly name -> full OSC address of a button, cue or scene control. Paste the address from Copy OSC Address.",
     "intro scene": "/scenes/Intro/select",
     "blackout": "/master/blackout"
-  }
+  },
+  "parameters": {
+    "_comment": "Shader parameter name -> OSC address. Load materials/HandStringVisualizer.fs in MadMapper, right-click each slider, choose Copy OSC Address and paste it here. These example addresses are guesses.",
+    "sensitivity": "/materials/HandStringVisualizer/sensitivity",
+    "colorMode": "/materials/HandStringVisualizer/colorMode",
+    "hueShift": "/materials/HandStringVisualizer/hueShift",
+    "hueSpeed": "/materials/HandStringVisualizer/hueSpeed",
+    "saturation": "/materials/HandStringVisualizer/saturation",
+    "pullAmount": "/materials/HandStringVisualizer/pullAmount",
+    "pullSpeed": "/materials/HandStringVisualizer/pullSpeed",
+    "bassKick": "/materials/HandStringVisualizer/bassKick",
+    "stringWidth": "/materials/HandStringVisualizer/stringWidth",
+    "glow": "/materials/HandStringVisualizer/glow",
+    "sway": "/materials/HandStringVisualizer/sway",
+    "background": "/materials/HandStringVisualizer/background"
+  },
+  "parameter_scale": "raw",
+  "_parameter_scale_comment": "raw sends values in the shader's own range (sensitivity 0-4). If MadMapper's sliders jump to the max, set this to normalized to send 0-1 instead."
 }

@@ -11,6 +11,7 @@ import anthropic
 from .addresses import AddressBook
 from .agent import DEFAULT_MODEL, MadMapperAgent
 from .osc import DEFAULT_HOST, DEFAULT_PORT, OscSender
+from .presets import PresetLibrary
 
 
 def _print_tool(name: str, inp: dict, output: str, is_error: bool) -> None:
@@ -27,6 +28,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--host", default=DEFAULT_HOST, help=f"MadMapper machine (default {DEFAULT_HOST})")
     p.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"MadMapper OSC input port (default {DEFAULT_PORT})")
     p.add_argument("--addresses", default="addresses.json", help="Path to addresses.json")
+    p.add_argument("--presets", default="presets.json", help="Path to presets.json (optional)")
     p.add_argument("--dry-run", action="store_true", help="Log OSC messages instead of sending them")
     p.add_argument("--model", default=DEFAULT_MODEL)
     p.add_argument("-v", "--verbose", action="store_true")
@@ -45,8 +47,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Can't find {args.addresses}. Copy the example and fill in your OSC addresses.", file=sys.stderr)
         return 2
 
+    try:
+        library = PresetLibrary.load(args.presets)
+    except FileNotFoundError:
+        library = None
+
     osc = OscSender(args.host, args.port, dry_run=args.dry_run)
-    agent = MadMapperAgent(osc, book, model=args.model, on_tool=_print_tool)
+    agent = MadMapperAgent(osc, book, model=args.model, library=library, on_tool=_print_tool)
 
     def run(text: str) -> None:
         try:

@@ -1,0 +1,30 @@
+{
+  "_comment": "Named looks for materials/HandStringVisualizer.fs. Each value is keyed by the shader input NAME; the matching OSC address comes from the \"parameters\" section of addresses.json.",
+  "material": "materials/HandStringVisualizer.fs",
+  "presets": {
+    "chill": {
+      "description": "Slow, warm sunset colors; a lazy pull and soft glow. Good for ambient or downtempo.",
+      "values": { "colorMode": 2, "sensitivity": 1.0, "hueSpeed": 0.02, "saturation": 0.9, "pullAmount": 0.35, "pullSpeed": 0.4, "bassKick": 0.3, "stringWidth": 0.04, "glow": 0.8, "sway": 0.6, "background": 0.5 }
+    },
+    "rave": {
+      "description": "Full rainbow cycling fast, hard bass kicks and a thick, bright string. For high-energy drops.",
+      "values": { "colorMode": 0, "sensitivity": 2.4, "hueSpeed": 0.3, "saturation": 1.2, "pullAmount": 0.8, "pullSpeed": 2.2, "bassKick": 1.6, "stringWidth": 0.07, "glow": 2.0, "sway": 0.9, "background": 0.9 }
+    },
+    "neon": {
+      "description": "Magenta and cyan club neon, strong glow, steady pull.",
+      "values": { "colorMode": 1, "sensitivity": 1.8, "hueSpeed": 0.08, "saturation": 1.3, "pullAmount": 0.5, "pullSpeed": 1.0, "bassKick": 0.9, "stringWidth": 0.055, "glow": 2.4, "sway": 0.4, "background": 0.7 }
+    },
+    "ice": {
+      "description": "Cool blues and whites, gentle motion, thin crisp string. Calm or cinematic moments.",
+      "values": { "colorMode": 3, "sensitivity": 1.2, "hueSpeed": 0.03, "saturation": 0.8, "pullAmount": 0.25, "pullSpeed": 0.6, "bassKick": 0.4, "stringWidth": 0.03, "glow": 1.2, "sway": 0.3, "background": 0.4 }
+    },
+    "heartbeat": {
+      "description": "Barely moves on its own; every bass hit yanks the string. Best on tracks with a clear kick.",
+      "values": { "colorMode": 1, "sensitivity": 2.0, "hueSpeed": 0.0, "hueShift": 0.95, "saturation": 1.1, "pullAmount": 0.05, "pullSpeed": 0.3, "bassKick": 2.0, "stringWidth": 0.06, "glow": 1.6, "sway": 0.1, "background": 0.3 }
+    },
+    "minimal": {
+      "description": "Dark background, no aurora, a single pale string. Lets the hand and string carry the scene.",
+      "values": { "colorMode": 3, "sensitivity": 1.4, "hueSpeed": 0.0, "hueShift": 0.1, "saturation": 0.4, "pullAmount": 0.4, "pullSpeed": 0.8, "bassKick": 0.6, "stringWidth": 0.025, "glow": 0.7, "sway": 0.2, "background": 0.0 }
+    }
+  }
+}

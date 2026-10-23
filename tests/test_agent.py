@@ -67,3 +67,21 @@ def test_refusal_stops_without_sending(osc, book):
     agent = MadMapperAgent(osc, book, client=client)
     assert "declined" in agent.run("anything")
     assert osc.sent == []
+
+
+def test_preset_tool(osc):
+    from pathlib import Path
+
+    from madmapper_agent.addresses import AddressBook
+    from madmapper_agent.presets import PresetLibrary
+
+    library = PresetLibrary.load(Path(__file__).resolve().parent.parent / "presets.json")
+    book = AddressBook.from_dict({"parameters": {"glow": "/m/glow"}})
+    client = FakeClient([
+        reply("tool_use", tool_use("t1", "apply_preset", {"name": "neon"})),
+        reply("end_turn", text("Switched to neon.")),
+    ])
+    agent = MadMapperAgent(osc, book, client=client, library=library)
+    assert agent.run("go neon") == "Switched to neon."
+    assert osc.sent == [("/m/glow", [2.4])]
+    assert "neon" in client.calls[0]["system"] and "stringWidth" in client.calls[0]["system"]

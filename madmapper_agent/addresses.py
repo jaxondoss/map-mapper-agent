@@ -29,12 +29,18 @@ def _entries(section: dict | None) -> dict[str, str]:
 class AddressBook:
     surfaces: dict[str, str] = field(default_factory=dict)
     triggers: dict[str, str] = field(default_factory=dict)
+    parameters: dict[str, str] = field(default_factory=dict)
+    # "raw" sends values in the shader's own range (e.g. sensitivity 0-4);
+    # "normalized" rescales them to 0-1 for hosts whose OSC sliders expect that.
+    parameter_scale: str = "raw"
 
     @classmethod
     def from_dict(cls, data: dict) -> "AddressBook":
         return cls(
             surfaces=_entries(data.get("surfaces")),
             triggers=_entries(data.get("triggers")),
+            parameters=_entries(data.get("parameters")),
+            parameter_scale=data.get("parameter_scale", "raw"),
         )
 
     @classmethod
@@ -59,6 +65,13 @@ class AddressBook:
             known = ", ".join(sorted(self.triggers)) or "none"
             raise AddressError(f"Unknown trigger '{name}'. Known triggers: {known}")
         return self.triggers[key]
+
+    def parameter_address(self, name: str) -> str:
+        key = name.strip().lower()
+        if key not in self.parameters:
+            known = ", ".join(sorted(self.parameters)) or "none"
+            raise AddressError(f"Unknown parameter '{name}'. Known parameters: {known}")
+        return self.parameters[key]
 
     def describe(self) -> str:
         """Human-readable summary, used in the agent's system prompt."""

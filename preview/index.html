@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Visualizer Preview</title>
+<style>
+  :root { color-scheme: dark; --bg: #0b0b0f; --panel: #16161d; --text: #e8e8ee; --muted: #9a9aa8; --accent: #7c5cff; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, sans-serif; display: grid; grid-template-columns: 1fr 300px; height: 100vh; }
+  canvas { width: 100%; height: 100%; display: block; background: #000; }
+  aside { background: var(--panel); padding: 14px; overflow-y: auto; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 18px 0 8px; }
+  h2:first-child { margin-top: 0; }
+  button { background: #24242e; color: var(--text); border: 1px solid #33333f; border-radius: 6px; padding: 6px 10px; margin: 0 6px 6px 0; cursor: pointer; font: inherit; }
+  button.on { border-color: var(--accent); background: #2a2340; }
+  label { display: block; margin: 8px 0 2px; color: var(--muted); font-size: 12px; }
+  input[type=range], select { width: 100%; }
+  #err { color: #ff7a7a; white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 12px; }
+  .note { color: var(--muted); font-size: 12px; }
+  body.bare { display: block; } body.bare aside { display: none; } body.bare canvas { width: 100vw; height: 100vh; }
+  @media (max-width: 720px) { body { grid-template-columns: 1fr; grid-template-rows: 55vh auto; height: auto; } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<aside>
+  <h2>Audio</h2>
+  <button id="demo" class="on">Demo beat</button><button id="mic">Microphone</button>
+  <label for="file">Or play a file</label><input id="file" type="file" accept="audio/*">
+  <p class="note">Demo beat is a synthetic signal so you can see the motion without music.</p>
+  <h2>Presets</h2><div id="presets"></div>
+  <h2>Parameters</h2><div id="params"></div>
+  <div id="err"></div>
+</aside>
+<script>
+// Minimal ISF host: enough of the ISF 2 spec for generator shaders with
+// float/long/bool/color/point2D inputs and audio/audioFFT textures.
+const qs = new URLSearchParams(location.search);
+const SHADER = qs.get("shader") || "../materials/HandStringVisualizer.fs";
+const canvas = document.getElementById("c");
+const gl = canvas.getContext("webgl", { preserveDrawingBuffer: true });
+if (qs.has("bare")) document.body.classList.add("bare");
+
+const WAVE_N = 256, FFT_N = 64;
+let program, inputs = [], values = {}, uniforms = {};
+let audioMode = "demo", analyser = null;
+const waveBytes = new Uint8Array(WAVE_N), fftBytes = new Uint8Array(FFT_N);
+
+function fail(msg) { document.getElementById("err").textContent = msg; window.__isfError = msg; console.error(msg); }
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+
+const GLSL_TYPE = { float: "float", long: "int", bool: "bool", color: "vec4", point2D: "vec2", event: "bool" };
+
+function build(src) {
+  const m = src.match(/\/\*([\s\S]*?)\*\//);
+  const meta = JSON.parse(m[1]);
+  inputs = meta.INPUTS || [];
+  let decl = "precision highp float;\nprecision highp int;\nuniform float TIME;\nuniform vec2 RENDERSIZE;\nvarying vec2 isf_FragNormCoord;\n#define IMG_NORM_PIXEL(img, c) texture2D(img, c)\n";
+  for (const i of inputs) {
+    if (i.TYPE === "audio" || i.TYPE === "audioFFT" || i.TYPE === "image") decl += `uniform sampler2D ${i.NAME};\n`;
+    else decl += `uniform ${GLSL_TYPE[i.TYPE]} ${i.NAME};\n`;
+    if (i.DEFAULT !== undefined && !(i.NAME in values)) values[i.NAME] = i.DEFAULT;
+  }
+  const frag = decl + src.slice(m.index + m[0].length);
+  const vert = "attribute vec2 pos; varying vec2 isf_FragNormCoord; void main(){ isf_FragNormCoord = pos*0.5+0.5; gl_Position = vec4(pos,0.,1.); }";
+  program = gl.createProgram();
+  gl.attachShader(program, compile(gl.VERTEX_SHADER, vert));
+  gl.attachShader(program, compile(gl.FRAGMENT_SHADER, frag));
+  gl.linkProgram(program);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
+  gl.useProgram(program);
+  for (const n of ["TIME", "RENDERSIZE", ...inputs.map(i => i.NAME)]) uniforms[n] = gl.getUniformLocation(program, n);
+
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(program, "pos");
+  gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+}
+
+function makeTex(unit) {
+  const t = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t);
+  for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+  return t;
+}
+
+// Synthetic audio: four-on-the-floor kick, offbeat hats, a wandering bassline.
+function demoAudio(t) {
+  const beat = t * 2.0, ph = beat % 1;
+  const kick = Math.exp(-ph * 7), hat = Math.exp(-((beat + 0.5) % 1) * 18);
+  const mid = 0.45 + 0.25 * Math.sin(t * 0.7);
+  for (let i = 0; i < FFT_N; i++) {
+    const x = i / FFT_N;
+    let v = kick * Math.exp(-x * 14) * 1.0 + mid * Math.exp(-Math.pow((x - 0.18 - 0.05 * Math.sin(t)) * 9, 2)) * 0.8 + hat * Math.exp(-Math.pow((x - 0.7) * 5, 2)) * 0.6;
+    v *= 0.85 + 0.15 * Math.sin(i * 1.7 + t * 9);
+    fftBytes[i] = Math.max(0, Math.min(255, v * 255));
+  }
+  for (let i = 0; i < WAVE_N; i++) {
+    const s = i / WAVE_N;
+    const v = kick * Math.sin(s * 2 * Math.PI * 3 + t * 40) * 0.35 + mid * Math.sin(s * 2 * Math.PI * 11 + t * 25) * 0.15 + hat * (Math.sin(s * 997 + t * 300) * 0.1);
+    waveBytes[i] = 128 + Math.max(-127, Math.min(127, v * 127));
+  }
+}
+
+function liveAudio() {
+  const f = new Uint8Array(analyser.frequencyBinCount); analyser.getByteFrequencyData(f);
+  // squash the analyser's linear bins onto 64 log-ish bands
+  for (let i = 0; i < FFT_N; i++) {
+    const a = Math.floor(Math.pow(i / FFT_N, 2) * f.length * 0.6), b = Math.max(a + 1, Math.floor(Math.pow((i + 1) / FFT_N, 2) * f.length * 0.6));
+    let s = 0; for (let j = a; j < b; j++) s += f[j]; fftBytes[i] = s / (b - a);
+  }
+  const w = new Uint8Array(analyser.fftSize); analyser.getByteTimeDomainData(w);
+  for (let i = 0; i < WAVE_N; i++) waveBytes[i] = w[Math.floor(i * w.length / WAVE_N)];
+}
+
+let waveTex, fftTex;
+function render(t) {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2), scale = qs.has("scale") ? +qs.get("scale") : 1;
+  const w = Math.floor(canvas.clientWidth * dpr * scale), h = Math.floor(canvas.clientHeight * dpr * scale);
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  gl.viewport(0, 0, w, h);
+  if (audioMode === "demo") demoAudio(t); else if (analyser) liveAudio();
+  gl.uniform1f(uniforms.TIME, t);
+  gl.uniform2f(uniforms.RENDERSIZE, w, h);
+  let unit = 0;
+  for (const i of inputs) {
+    const u = uniforms[i.NAME], v = values[i.NAME];
+    if (i.TYPE === "audio" || i.TYPE === "audioFFT") {
+      const tex = i.TYPE === "audio" ? waveTex : fftTex, data = i.TYPE === "audio" ? waveBytes : fftBytes;
+      gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, data.length, 1, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, data);
+      gl.uniform1i(u, unit++);
+    } else if (i.TYPE === "float") gl.uniform1f(u, v);
+    else if (i.TYPE === "long") gl.uniform1i(u, v | 0);
+    else if (i.TYPE === "bool" || i.TYPE === "event") gl.uniform1i(u, v ? 1 : 0);
+    else if (i.TYPE === "color") gl.uniform4fv(u, v);
+    else if (i.TYPE === "point2D") gl.uniform2fv(u, v);
+  }
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
+function buildUI(presets) {
+  const pBox = document.getElementById("params"); pBox.innerHTML = "";
+  for (const i of inputs) {
+    if (!["float", "long"].includes(i.TYPE)) continue;
+    const lab = document.createElement("label"); lab.textContent = i.LABEL || i.NAME; lab.htmlFor = "in-" + i.NAME; pBox.appendChild(lab);
+    let el;
+    if (i.TYPE === "long") {
+      el = document.createElement("select");
+      i.VALUES.forEach((v, k) => { const o = document.createElement("option"); o.value = v; o.textContent = i.LABELS[k]; el.appendChild(o); });
+    } else {
+      el = document.createElement("input"); el.type = "range"; el.min = i.MIN; el.max = i.MAX; el.step = (i.MAX - i.MIN) / 200;
+    }
+    el.id = "in-" + i.NAME; el.value = values[i.NAME];
+    el.oninput = () => { values[i.NAME] = +el.value; document.querySelectorAll("#presets button").forEach(b => b.classList.remove("on")); };
+    pBox.appendChild(el);
+  }
+  const box = document.getElementById("presets"); box.innerHTML = "";
+  for (const [name, p] of Object.entries(presets)) {
+    const b = document.createElement("button"); b.textContent = name; b.title = p.description;
+    b.onclick = () => applyPreset(name, presets);
+    box.appendChild(b);
+  }
+}
+
+function applyPreset(name, presets) {
+  for (const i of inputs) if (i.DEFAULT !== undefined) values[i.NAME] = i.DEFAULT;
+  Object.assign(values, presets[name].values);
+  for (const [k, v] of Object.entries(values)) { const el = document.getElementById("in-" + k); if (el) el.value = v; }
+  document.querySelectorAll("#presets button").forEach(b => b.classList.toggle("on", b.textContent === name));
+}
+
+async function useMic() {
+  const ctx = new AudioContext(), stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  analyser = ctx.createAnalyser(); analyser.fftSize = 2048; analyser.smoothingTimeConstant = 0.7;
+  ctx.createMediaStreamSource(stream).connect(analyser); audioMode = "live";
+}
+function useFile(file) {
+  const ctx = new AudioContext(), audio = new Audio(URL.createObjectURL(file));
+  analyser = ctx.createAnalyser(); analyser.fftSize = 2048; analyser.smoothingTimeConstant = 0.7;
+  const srcNode = ctx.createMediaElementSource(audio); srcNode.connect(analyser); analyser.connect(ctx.destination);
+  audio.play(); audioMode = "live";
+}
+function setAudioButton(id) { for (const b of ["demo", "mic"]) document.getElementById(b).classList.toggle("on", b === id); }
+document.getElementById("demo").onclick = () => { audioMode = "demo"; setAudioButton("demo"); };
+document.getElementById("mic").onclick = () => useMic().then(() => setAudioButton("mic")).catch(e => fail("Microphone: " + e.message));
+document.getElementById("file").onchange = e => { if (e.target.files[0]) { useFile(e.target.files[0]); setAudioButton(null); } };
+
+(async () => {
+  try {
+    build(await (await fetch(SHADER)).text());
+    let presets = {};
+    try { presets = (await (await fetch("../presets.json")).json()).presets; } catch (e) {}
+    buildUI(presets);
+    if (qs.get("preset") && presets[qs.get("preset")]) applyPreset(qs.get("preset"), presets);
+    waveTex = makeTex(0); fftTex = makeTex(1);
+    if (qs.has("t")) {           // fixed frame, for screenshots
+      render(+qs.get("t")); window.__isfReady = true; return;
+    }
+    const t0 = performance.now();
+    const loop = () => { render((performance.now() - t0) / 1000); requestAnimationFrame(loop); };
+    loop(); window.__isfReady = true;
+  } catch (e) { fail(String(e.message || e)); }
+})();
+</script>
+</body>
+</html>

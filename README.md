@@ -164,6 +164,18 @@ How it's built:
 - Authored hex colors are pre-compensated for ACES tone mapping at exposure 1.1, so flat surfaces render at their hex values.
 - Motion is a pure function of time. Every move eases with easeInOutCubic, the shoulder leads the elbow by 40 ms and the wrist by 80 ms, and the fingers are staggered 32 ms apart with a ~4° settle overshoot. Orientations blend with quaternion slerp. The hand breathes and its fingers flutter while it's still. The orb follows the hand on a critically damped spring, simulated at a fixed 120 Hz step.
 
+## Scene: Icarus falling
+
+`scenes/icarus_fall.html` uses the same holographic look and is another 20-second seamless loop. Icarus flies too close to a projected sun and falls into a projected sea:
+
+1. **Flight (1–6 s).** He beats feathered wings strapped to his arms and climbs toward the sun. The elbow and wrist lag the shoulder, and the legs trail.
+2. **The sun (6–8.5 s).** The sun flares, his rim heats toward orange, wax drips from his wrists, and the outer feathers shiver loose.
+3. **Failure (8.5–9.5 s).** The wingbeat speeds up and turns ragged as the feathers tear away, burning orange to red.
+4. **The fall (9.5–14.5 s).** He tumbles one and a half turns head over heels, limbs flailing on unrelated rhythms, swings toward the viewer, and straightens into a dive.
+5. **The sea (14.5–20 s).** He plunges through the horizon. Spray flies up, perspective ripple rings spread across a wave lattice, and the last feathers drift down.
+
+Same controls as the arm scene (Space, R, 1–6, `?dev`, `?t=`). The figure is procedural: 21 joints of tapered capsules, skinned with blended weights at the joints. The 24 feathers are instanced vanes with fwidth() outlines, rachis and barbs. Wax drips and spray are crisp instanced discs. The sea is drawn in the wall shader as a log-spaced wave lattice with ripple rings on the water plane.
+
 ## Development
 
 ```

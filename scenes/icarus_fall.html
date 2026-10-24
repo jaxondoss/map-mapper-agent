@@ -1,0 +1,771 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Icarus Falling</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #5f6d60; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+  #hud {
+    position: fixed; left: max(14px, env(safe-area-inset-left, 0px)); bottom: max(12px, env(safe-area-inset-bottom, 0px));
+    font: 12px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace; color: #e6fbffcc;
+    background: #0a1a2a66; padding: 6px 10px; border-radius: 4px; pointer-events: none;
+    transition: opacity .6s ease; letter-spacing: .02em;
+  }
+  #hud.hide { opacity: 0; }
+</style>
+</head>
+<body>
+<div id="hud">Space pause · R restart · 1–6 jump to beat</div>
+<!--
+  Icarus Falling — a holographic wireframe Icarus flies too close to a projected
+  sun, loses his feathers and falls into a projected sea. Part of the
+  madmapper-agent projection mapping archive (same look as Holo Arm and Lamp).
+-->
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from "three";
+import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
+import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
+
+const V3 = THREE.Vector3, Q = THREE.Quaternion;
+const params = new URLSearchParams(location.search);
+const DEV = params.has("dev");
+const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const SPEED = REDUCED ? 0.5 : 1;
+const LOOP = 20;
+const BEATS = [0, 1, 6, 8.5, 9.5, 14.5];
+const DEG = Math.PI / 180;
+const FIG = 0.85;                // figure scale: real meters -> wall meters
+const CELL = 0.042;              // lattice cell (figure meters)
+const SEA_Y = -1.05;             // the projected horizon line on the wall
+
+// ------------------------------------------------------------------ color (ACES-compensated, as in Holo Arm and Lamp)
+const EXPOSURE = 1.1;
+const ACES_IN = new THREE.Matrix3().set(0.59719, 0.35458, 0.04823, 0.07600, 0.90834, 0.01566, 0.02840, 0.13383, 0.83777);
+const ACES_OUT = new THREE.Matrix3().set(1.60475, -0.53108, -0.07367, -0.10208, 1.10813, -0.00605, -0.00327, -0.07276, 1.07602);
+const ACES_IN_INV = ACES_IN.clone().invert(), ACES_OUT_INV = ACES_OUT.clone().invert();
+function invFit(x) {
+  x = Math.min(Math.max(x, 0), 1.0);
+  const a = 1 - 0.983729 * x, b = 0.0245786 - 0.432951 * x, c = -(0.000090537 + 0.238081 * x);
+  return (-b + Math.sqrt(b * b - 4 * a * c)) / (2 * a);
+}
+function untone(hex, gain = 1) {
+  const c = new THREE.Color(hex);
+  const x = new V3(c.r, c.g, c.b).applyMatrix3(ACES_OUT_INV);
+  const y = new V3(invFit(x.x), invFit(x.y), invFit(x.z)).applyMatrix3(ACES_IN_INV);
+  const k = 0.6 / EXPOSURE * gain;
+  return new THREE.Color(Math.max(0, y.x * k), Math.max(0, y.y * k), Math.max(0, y.z * k));
+}
+const COL = {
+  wallTop: untone("#7c8a7a"), wallBot: untone("#5f6d60"),
+  fill: untone("#0078D8"), line: untone("#18C0F0"), rim: untone("#7FE8FF"), hot: untone("#E6FBFF"),
+  sunCore: untone("#FFE27A"), sunEdge: untone("#FF8A1E"), sunHalo: untone("#FF6A1A"),
+  heat: untone("#FF5A12"), burn: untone("#F00018"), wax: untone("#FFB547"),
+  sea: untone("#18C0F0"), horizon: untone("#7FE8FF"), seaFill: untone("#0a3a6a"), spray: untone("#E6FBFF"),
+};
+
+// ------------------------------------------------------------------ renderer
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2.5));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = EXPOSURE;
+document.body.prepend(renderer.domElement);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 80);
+const BLOOM = { value: 0 }, TIME = { value: 0 };
+const SAFE = { l: -2.25, r: 2.25, b: -1.5, t: 1.5 };
+const view = { l: 0, r: 0, b: 0, t: 0 };
+const SUN = new V3(1.32, 0.86, 0.01);
+const SUN_R = 0.22;
+
+// shared uniforms for everything lit by the sun or cut by the sea
+const SUNI = { value: 1 };
+const RIPPLE = { value: new THREE.Vector4(0, -10, 0, 0) };   // impact x, time since impact, strength
+
+// ------------------------------------------------------------------ wall: sage gradient, molding, sun spill, projected sea
+const wallMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uView: { value: new THREE.Vector4() }, uTop: { value: COL.wallTop }, uBot: { value: COL.wallBot },
+    uSun: { value: SUN }, uSunCol: { value: COL.sunHalo }, uSunI: SUNI, uSeaY: { value: SEA_Y },
+    uSea: { value: COL.sea }, uHorizon: { value: COL.horizon }, uSeaFill: { value: COL.seaFill }, uSpray: { value: COL.spray },
+    uRipple: RIPPLE, uTime: TIME, uBloom: BLOOM,
+  },
+  vertexShader: /* glsl */`varying vec3 vW; void main(){ vec4 w = modelMatrix * vec4(position,1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
+  fragmentShader: /* glsl */`
+    uniform vec4 uView, uRipple; uniform vec3 uTop, uBot, uSun, uSunCol, uSea, uHorizon, uSeaFill, uSpray;
+    uniform float uSunI, uSeaY, uTime, uBloom;
+    varying vec3 vW;
+    void main() {
+      vec2 p = vW.xy;
+      float vy = clamp((p.y - uView.y) / (uView.w - uView.y), 0.0, 1.0);
+      vec3 wall = mix(uBot, uTop, smoothstep(0.0, 1.0, vy));
+      float my = uView.w - 0.075 * (uView.w - uView.y);
+      float py = fwidth(p.y);
+      float above = smoothstep(my - py, my + py, p.y);
+      wall *= mix(1.0, 1.07, above);
+      float edge = 1.0 - smoothstep(0.0, 1.5 * py, abs(p.y - my));
+      float shadowLine = 1.0 - smoothstep(0.0, 1.5 * py, abs(p.y - (my - 0.02)));
+      wall *= 1.0 - 0.05 * exp(-max(0.0, my - p.y) / 0.06) * (1.0 - above) - 0.10 * shadowLine;
+      wall += wall * 0.10 * edge;
+      vec2 c = (p - 0.5 * (uView.xy + uView.zw)) / (0.5 * (uView.zw - uView.xy));
+      wall *= 1.0 - 0.10 * smoothstep(0.5, 1.5, length(c));
+      // warm sun spill on the wall
+      float ds = length(p - uSun.xy);
+      vec3 light = uSunCol * uSunI * (0.55 * exp(-ds / 0.55) + 0.25 * exp(-ds / 1.6));
+      vec3 col = wall + wall * light * 2.0 + light * 0.12;
+      // projected sea below the horizon: a perspective wave lattice
+      vec3 sea = vec3(0.0);
+      float d = uSeaY - p.y;
+      float fy = fwidth(p.y);
+      float hl = 1.0 - smoothstep(0.0, 1.6 * fy, abs(d));                // the horizon line
+      sea += uHorizon * hl * 1.1;
+      if (d > 0.0) {
+        float depth = 0.32 / (d + 0.015);                                   // far at the horizon, near at the bottom
+        float X = (p.x - 0.0) * depth;
+        // rows evenly spaced in log depth, so waves reach all the way to the bottom of tall screens
+        float rows = log(depth) * 4.2 + 0.18 * sin(X * 1.3 + uTime * 0.8) + 0.08 * sin(X * 3.4 - uTime * 1.9);
+        float fr = max(fwidth(rows), 1e-5);
+        float rowLine = clamp(1.25 - abs(fract(rows + 0.5) - 0.5) / fr, 0.0, 1.0);
+        rowLine *= smoothstep(0.32, 0.12, fr);                              // drop rows before they crowd the horizon
+        float cols = X * 0.9;
+        float fc = max(fwidth(cols), 1e-5);
+        float colLine = clamp(1.25 - abs(fract(cols + 0.5) - 0.5) / fc, 0.0, 1.0) * smoothstep(0.55, 0.18, fc) * 0.45;
+        // ripples from the splash, as rings on the water plane
+        float rip = 0.0;
+        if (uRipple.y > 0.0 && uRipple.z > 0.0) {
+          vec2 w = vec2(X - uRipple.x * (0.32 / 0.24), depth - 0.32 / 0.24);       // rings centred a little way into the water
+          float r = length(w * vec2(0.28, 1.0));
+          for (int k = 0; k < 4; k++) {
+            float R = uRipple.y * 0.55 - float(k) * 0.22;
+            if (R <= 0.0) continue;
+            float fw = max(fwidth(r), 1e-5);
+            float ring = clamp(1.3 - abs(r - R) / fw, 0.0, 1.0);
+            rip += ring * exp(-R * 0.6) * (1.0 - 0.18 * float(k)) * smoothstep(0.5, 0.15, fw);   // fade rings as they flatten into the horizon
+          }
+          rip *= uRipple.z;
+        }
+        float fade = smoothstep(0.0, 0.25, d);
+        sea += (uSeaFill * 0.6 * fade + uSea * (rowLine + colLine) * 0.75 * (0.4 + 0.6 * fade)) + uSpray * rip * 1.2;
+      }
+      col += sea;
+      if (uBloom > 0.5) col = sea * 0.35;
+      gl_FragColor = vec4(col, 1.0);
+    }`,
+});
+const wall = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), wallMat);
+scene.add(wall);
+
+// ------------------------------------------------------------------ sun: a crisp disc with a ray corona and a halo
+const sunMat = new THREE.ShaderMaterial({
+  uniforms: { uCore: { value: COL.sunCore }, uEdge: { value: COL.sunEdge }, uHalo: { value: COL.sunHalo }, uI: SUNI, uTime: TIME, uBloom: BLOOM, uR: { value: SUN_R } },
+  vertexShader: /* glsl */`varying vec2 vP; void main(){ vP = position.xy; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+  fragmentShader: /* glsl */`
+    uniform vec3 uCore, uEdge, uHalo; uniform float uI, uTime, uBloom, uR; varying vec2 vP;
+    float hash(float n) { return fract(sin(n) * 43758.5453); }
+    void main() {
+      float r = length(vP), a = atan(vP.y, vP.x);
+      float aa = fwidth(r);
+      float disc = 1.0 - smoothstep(uR - aa, uR + aa, r);
+      vec3 col = mix(uCore * 1.15, uEdge, smoothstep(0.0, uR, r)) * disc;
+      // rays: thin crisp spokes whose length breathes and flares
+      float n = 36.0;
+      float s = a / 6.28318 * n + uTime * 0.12;
+      float id = floor(s + 0.5);
+      float len = uR * (1.35 + 0.55 * hash(id) * (0.7 + 0.3 * sin(uTime * 1.3 + id))) * (0.85 + 0.35 * (uI - 1.0) + 0.15);
+      float fa = max(fwidth(s), 1e-5);
+      float spoke = clamp(1.0 - abs(fract(s + 0.5) - 0.5) / fa * (r / uR), 0.0, 1.0);
+      float rayA = spoke * smoothstep(uR * 1.02, uR * 1.1, r) * (1.0 - smoothstep(len * 0.6, len, r));
+      col += uEdge * rayA * 0.9 * uI;
+      // a thin outer ring, and the soft halo
+      float ring = clamp(1.3 - abs(r - uR * 1.18) / aa, 0.0, 1.0) * 0.6;
+      col += uEdge * ring * uI;
+      vec3 halo = uHalo * exp(-r * r / (uR * uR * 3.5)) * 0.45 * uI * (1.0 - disc);
+      if (uBloom > 0.5) col = col * 0.6;
+      else col += halo;
+      gl_FragColor = vec4(col * uI, 1.0);
+    }`,
+  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+});
+const sun = new THREE.Mesh(new THREE.PlaneGeometry(1.8, 1.8), sunMat);
+sun.position.copy(SUN);
+scene.add(sun);
+
+// ------------------------------------------------------------------ hologram material (body)
+function makeHoloMaterial() {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uCell: { value: CELL }, uTime: TIME, uBloom: BLOOM,
+      uFill: { value: COL.fill }, uLine: { value: COL.line }, uRim: { value: COL.rim }, uHot: { value: COL.hot },
+      uFillA: { value: 0.55 }, uSun: { value: SUN }, uSunCol: { value: COL.heat }, uSunI: SUNI, uSeaY: { value: SEA_Y },
+    },
+    vertexShader: /* glsl */`
+      #include <common>
+      #include <skinning_pars_vertex>
+      attribute vec2 aLat; attribute float aTip;
+      varying vec2 vLat; varying float vTip; varying vec3 vN; varying vec3 vV; varying vec3 vW;
+      void main() {
+        #include <skinbase_vertex>
+        #include <beginnormal_vertex>
+        #include <skinnormal_vertex>
+        #include <begin_vertex>
+        #include <skinning_vertex>
+        vec4 mv = modelViewMatrix * vec4(transformed, 1.0);
+        vN = normalize(normalMatrix * objectNormal);
+        vV = normalize(-mv.xyz);
+        vW = (modelMatrix * vec4(transformed, 1.0)).xyz;
+        vLat = aLat; vTip = aTip;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: /* glsl */`
+      uniform float uCell, uTime, uBloom, uFillA, uSunI, uSeaY; uniform vec3 uFill, uLine, uRim, uHot, uSun, uSunCol;
+      varying vec2 vLat; varying float vTip; varying vec3 vN; varying vec3 vV; varying vec3 vW;
+      void main() {
+        float under = 1.0 - smoothstep(uSeaY - 0.015, uSeaY + 0.02, vW.y);
+        if (under > 0.999) discard;                                   // gone below the sea
+        vec2 g = vLat / uCell;
+        vec2 fw = max(fwidth(g), vec2(1e-6));
+        vec2 dl = abs(fract(g - 0.5) - 0.5) / fw;
+        float density = smoothstep(2.5, 5.0, 1.0 / max(fw.x, fw.y));
+        float lineA = clamp(1.0 - min(dl.x, dl.y) + 0.35, 0.0, 1.0) * density;
+        float dotA = clamp(1.9 - length(dl), 0.0, 1.0) * density;
+        vec3 n = normalize(gl_FrontFacing ? vN : -vN);
+        float fres = pow(1.0 - clamp(abs(dot(n, normalize(vV))), 0.0, 1.0), 3.5);
+        vec3 rimCol = mix(uRim, uHot, clamp(vTip * (0.4 + fres), 0.0, 1.0));
+        // heat: the closer to the sun, the more the rim burns orange
+        float heat = clamp(exp(-length(vW.xy - uSun.xy) / 0.75) * 1.6 * (uSunI - 0.4), 0.0, 1.0);
+        rimCol = mix(rimCol, uSunCol * 1.4, heat);
+        float scan = 1.0 + 0.025 * smoothstep(0.6, 1.0, sin(vLat.y * 9.0 - uTime * 1.6));
+        float face = gl_FrontFacing ? 1.0 : 0.35;
+        float keep = 1.0 - under;
+        vec3 glow = (uLine * lineA * 0.85 + uHot * dotA * 0.5 + rimCol * fres * 1.05) * face;
+        vec3 bloomIn = (uLine * lineA * 0.05 + uHot * dotA * 0.08 + rimCol * fres * fres * 0.5 + uSunCol * heat * fres * 0.4) * (gl_FrontFacing ? 1.0 : 0.0);
+        vec3 col = (uFill * uFillA * face + glow) * scan * keep;
+        float a = uFillA * face * keep;
+        if (uBloom > 0.5) { col = bloomIn * scan * keep; a = 0.0; }
+        gl_FragColor = vec4(col, a);
+      }`,
+    transparent: true, depthWrite: false, side: THREE.DoubleSide,
+    blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
+    blendSrcAlpha: THREE.OneFactor, blendDstAlpha: THREE.OneMinusSrcAlphaFactor,
+  });
+}
+
+// Feathers: flat vanes with a crisp outline, a rachis and diagonal barbs, all
+// from fwidth(). Per-instance heat (blue -> orange -> red) and alpha.
+const featherMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uFill: { value: COL.fill }, uLine: { value: COL.line }, uRim: { value: COL.rim }, uHot: { value: COL.hot },
+    uHeat: { value: COL.heat }, uBurn: { value: COL.burn }, uSeaY: { value: SEA_Y }, uBloom: BLOOM,
+  },
+  vertexShader: /* glsl */`
+    attribute vec2 aUv; attribute float aHeat; attribute float aAlpha;
+    varying vec2 vUv; varying float vHeat; varying float vAlpha; varying vec3 vW; varying vec3 vN; varying vec3 vV;
+    void main() {
+      vec4 wp = modelMatrix * instanceMatrix * vec4(position, 1.0);
+      vW = wp.xyz;
+      vN = normalize(mat3(viewMatrix) * mat3(modelMatrix) * mat3(instanceMatrix) * normal);
+      vec4 mv = viewMatrix * wp;
+      vV = normalize(-mv.xyz);
+      vUv = aUv; vHeat = aHeat; vAlpha = aAlpha;
+      gl_Position = projectionMatrix * mv;
+    }`,
+  fragmentShader: /* glsl */`
+    uniform vec3 uFill, uLine, uRim, uHot, uHeat, uBurn; uniform float uSeaY, uBloom;
+    varying vec2 vUv; varying float vHeat; varying float vAlpha; varying vec3 vW; varying vec3 vN; varying vec3 vV;
+    float px(float x) { return max(fwidth(x), 1e-5); }
+    void main() {
+      if (vAlpha < 0.002) discard;
+      float keep = smoothstep(uSeaY - 0.01, uSeaY + 0.03, vW.y);
+      if (keep < 0.002) discard;
+      float u = vUv.x, v = vUv.y;                                    // u: -1..1 across, v: 0..1 along
+      float outline = clamp(1.4 - (1.0 - abs(u)) / px(u), 0.0, 1.0);
+      float rachis = clamp(1.2 - abs(u) / px(u) * 0.8, 0.0, 1.0) * smoothstep(0.98, 0.9, v);
+      float b = v * 16.0 + abs(u) * 2.2;
+      float barb = clamp(1.0 - abs(fract(b + 0.5) - 0.5) / px(b) + 0.3, 0.0, 1.0) * 0.8;
+      float fres = pow(1.0 - clamp(abs(dot(normalize(vN), normalize(vV))), 0.0, 1.0), 3.0);
+      vec3 heatCol = mix(uHeat, uBurn, smoothstep(0.55, 1.0, vHeat));
+      vec3 lineCol = mix(uLine, heatCol * 1.2, vHeat);
+      vec3 edgeCol = mix(mix(uRim, uHot, 0.3 * v), heatCol * 1.5, vHeat);
+      vec3 fill = mix(uFill, heatCol * 0.45, vHeat) * 0.5;
+      vec3 glow = lineCol * barb * 0.75 + edgeCol * (outline * 1.15 + rachis * 0.9 + fres * 0.5);
+      float a = 0.5 * vAlpha * keep;
+      vec3 col = (fill * 0.5 + glow) * vAlpha * keep;
+      if (uBloom > 0.5) { col = (edgeCol * (outline * 0.5 + rachis * 0.3) + heatCol * vHeat * 0.35) * vAlpha * keep; a = 0.0; }
+      gl_FragColor = vec4(col, a);
+    }`,
+  transparent: true, depthWrite: false, side: THREE.DoubleSide,
+  blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
+});
+
+// Drops: crisp glowing discs for wax drips and spray.
+const dropMat = new THREE.ShaderMaterial({
+  uniforms: { uWax: { value: COL.wax }, uSpray: { value: COL.spray }, uBloom: BLOOM },
+  vertexShader: /* glsl */`
+    attribute float aKind; attribute float aAlpha; varying vec2 vQ; varying float vKind; varying float vAlpha;
+    void main(){ vQ = position.xy * 2.0; vKind = aKind; vAlpha = aAlpha;
+      gl_Position = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4(position, 1.0); }`,
+  fragmentShader: /* glsl */`
+    uniform vec3 uWax, uSpray; uniform float uBloom; varying vec2 vQ; varying float vKind; varying float vAlpha;
+    void main() {
+      if (vAlpha < 0.002) discard;
+      float r = length(vQ), aa = fwidth(r);
+      float disc = 1.0 - smoothstep(1.0 - aa, 1.0 + aa, r);
+      if (disc <= 0.0) discard;
+      vec3 c = mix(uWax, uSpray, vKind);
+      vec3 col = mix(c * 1.6, c, smoothstep(0.0, 1.0, r)) * disc * vAlpha;
+      if (uBloom > 0.5) col *= 0.5;
+      gl_FragColor = vec4(col, 1.0);
+    }`,
+  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+});
+
+// ------------------------------------------------------------------ the figure rig
+// Rest pose: standing, arms straight out (a T), facing +Z (the camera), head +Y.
+// Every joint's rest frame is the body frame, so local Euler angles read plainly.
+const JDEF = [
+  ["pelvis", null, [0, 0, 0]],
+  ["spine", "pelvis", [0, 0.12, 0]], ["chest", "spine", [0, 0.22, 0]], ["neck", "chest", [0, 0.22, 0]], ["head", "neck", [0, 0.09, 0]],
+  ["shoulder.L", "chest", [0.18, 0.15, 0]], ["elbow.L", "shoulder.L", [0.30, 0, 0]], ["wrist.L", "elbow.L", [0.26, 0, 0]], ["hand.L", "wrist.L", [0.17, 0, 0]],
+  ["shoulder.R", "chest", [-0.18, 0.15, 0]], ["elbow.R", "shoulder.R", [-0.30, 0, 0]], ["wrist.R", "elbow.R", [-0.26, 0, 0]], ["hand.R", "wrist.R", [-0.17, 0, 0]],
+  ["hip.L", "pelvis", [0.10, -0.05, 0]], ["knee.L", "hip.L", [0, -0.44, 0]], ["ankle.L", "knee.L", [0, -0.43, 0]], ["toe.L", "ankle.L", [0, -0.05, 0.15]],
+  ["hip.R", "pelvis", [-0.10, -0.05, 0]], ["knee.R", "hip.R", [0, -0.44, 0]], ["ankle.R", "knee.R", [0, -0.43, 0]], ["toe.R", "ankle.R", [0, -0.05, 0.15]],
+];
+const JN = JDEF.map(j => j[0]), PAR = Object.fromEntries(JDEF.map(j => [j[0], j[1]]));
+const OFF = Object.fromEntries(JDEF.map(j => [j[0], new V3(...j[2]).multiplyScalar(FIG)]));
+const REST = {};
+for (const [n, p] of JDEF) REST[n] = p ? REST[p].clone().add(OFF[n]) : new V3();
+
+function buildFigure() {
+  const P = [], N = [], SI = [], SW = [], LAT = [], TIP = [], IDX = [];
+  const bi = n => JN.indexOf(n);
+  // a tapered capsule from A to B, skinned to `bone` (and blended into `parent` near A)
+  function capsule(A, B, rA, rB, bone, parent, opt = {}) {
+    const flat = opt.flat ?? 1, radial = opt.radial ?? 22, rings = opt.rings ?? 8, tipEnd = opt.tip ?? 0;
+    const axis = B.clone().sub(A), len = axis.length(); axis.normalize();
+    const ref = opt.ref ?? new V3(0, 0, 1);
+    const u = ref.clone().addScaledVector(axis, -ref.dot(axis)).normalize(), v = new V3().crossVectors(axis, u);
+    const around = Math.max(8, Math.round(2 * Math.PI * ((rA + rB) / 2 / FIG) / CELL)) * CELL;
+    const rows = [], capN = 5;
+    for (let k = -capN; k <= rings + capN; k++) {
+      let center, rad, nAx, s;
+      if (k < 0) { const a = (k / capN) * Math.PI / 2; center = A.clone().addScaledVector(axis, Math.sin(a) * rA); rad = Math.cos(a) * rA; nAx = Math.sin(a); s = Math.sin(a) * rA / len; }
+      else if (k > rings) { const a = ((k - rings) / capN) * Math.PI / 2; center = B.clone().addScaledVector(axis, Math.sin(a) * rB); rad = Math.cos(a) * rB; nAx = Math.sin(a); s = 1 + Math.sin(a) * rB / len; }
+      else { s = k / rings; center = A.clone().lerp(B, s); rad = rA + (rB - rA) * s; nAx = (rA - rB) / len; }
+      rows.push(P.length / 3);
+      const wp = parent ? Math.max(0, 0.5 * (1 - s / 0.22)) : 0;
+      for (let j = 0; j < radial; j++) {
+        const a = j / radial * Math.PI * 2, ca = Math.cos(a), sa = Math.sin(a);
+        const dir = u.clone().multiplyScalar(ca).addScaledVector(v, sa * flat);
+        P.push(...center.clone().addScaledVector(dir, rad).toArray());
+        const nd = u.clone().multiplyScalar(ca).addScaledVector(v, sa / flat).normalize();
+        N.push(...nd.multiplyScalar(Math.sqrt(Math.max(0, 1 - nAx * nAx))).addScaledVector(axis, nAx).normalize().toArray());
+        SI.push(bi(bone), parent ? bi(parent) : 0, 0, 0); SW.push(1 - wp, wp, 0, 0);
+        LAT.push((j / radial) * around, (opt.v0 ?? 0) + s * len / FIG);
+        TIP.push(tipEnd * Math.max(0, Math.min(1, (s - 0.55) / 0.5)));
+      }
+    }
+    for (let r = 0; r < rows.length - 1; r++) for (let j = 0; j < radial; j++) {
+      const a = rows[r] + j, b = rows[r] + (j + 1) % radial, c = rows[r + 1] + j, d = rows[r + 1] + (j + 1) % radial;
+      IDX.push(a, c, b, b, c, d);
+    }
+  }
+  const R = REST, s = FIG, side = new V3(1, 0, 0);
+  capsule(R["hip.R"].clone().add(new V3(-0.02 * s, 0.03 * s, 0)), R["hip.L"].clone().add(new V3(0.02 * s, 0.03 * s, 0)), 0.115 * s, 0.115 * s, "pelvis", null, { flat: 0.72, ref: new V3(0, 0, 1) });
+  capsule(R.pelvis.clone().add(new V3(0, 0.02 * s, 0)), R.spine, 0.11 * s, 0.115 * s, "spine", "pelvis", { flat: 0.7, ref: side, v0: 0 });
+  capsule(R.spine, R.chest.clone().add(new V3(0, 0.06 * s, 0)), 0.12 * s, 0.15 * s, "chest", "spine", { flat: 0.66, ref: side, v0: 0.12 });
+  capsule(R["shoulder.R"].clone().add(new V3(0.03 * s, -0.01 * s, 0)), R["shoulder.L"].clone().add(new V3(-0.03 * s, -0.01 * s, 0)), 0.075 * s, 0.075 * s, "chest", null, { flat: 0.8 });
+  capsule(R.neck.clone().add(new V3(0, -0.03 * s, 0)), R.head, 0.05 * s, 0.045 * s, "neck", "chest", { v0: 0.5 });
+  capsule(R.head.clone().add(new V3(0, 0.06 * s, 0.01 * s)), R.head.clone().add(new V3(0, 0.15 * s, 0)), 0.095 * s, 0.085 * s, "head", null, { tip: 0.7, v0: 0.6, rings: 4 });
+  for (const sd of ["L", "R"]) {
+    capsule(R["shoulder." + sd], R["elbow." + sd], 0.055 * s, 0.044 * s, "shoulder." + sd, "chest", { v0: 0 });
+    capsule(R["elbow." + sd], R["wrist." + sd], 0.043 * s, 0.032 * s, "elbow." + sd, "shoulder." + sd, { v0: 0.3 });
+    capsule(R["wrist." + sd], R["hand." + sd], 0.03 * s, 0.024 * s, "wrist." + sd, "elbow." + sd, { flat: 0.5, tip: 1, v0: 0.56 });
+    capsule(R["hip." + sd], R["knee." + sd], 0.085 * s, 0.058 * s, "hip." + sd, "pelvis", { v0: 0 });
+    capsule(R["knee." + sd], R["ankle." + sd], 0.055 * s, 0.038 * s, "knee." + sd, "hip." + sd, { v0: 0.44 });
+    capsule(R["ankle." + sd], R["toe." + sd], 0.038 * s, 0.028 * s, "ankle." + sd, "knee." + sd, { tip: 1, flat: 0.7, ref: new V3(1, 0, 0), v0: 0.87 });
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(P, 3));
+  geo.setAttribute("normal", new THREE.Float32BufferAttribute(N, 3));
+  geo.setAttribute("skinIndex", new THREE.Uint16BufferAttribute(SI, 4));
+  geo.setAttribute("skinWeight", new THREE.Float32BufferAttribute(SW, 4));
+  geo.setAttribute("aLat", new THREE.Float32BufferAttribute(LAT, 2));
+  geo.setAttribute("aTip", new THREE.Float32BufferAttribute(TIP, 1));
+  geo.setIndex(IDX);
+  const root = new THREE.Group(), bones = {}, list = [];
+  for (const n of JN) { const b = new THREE.Bone(); b.name = n; b.position.copy(REST[n]); root.add(b); bones[n] = b; list.push(b); }
+  const mesh = new THREE.SkinnedMesh(geo, makeHoloMaterial());
+  mesh.frustumCulled = false;
+  root.add(mesh); root.updateMatrixWorld(true);
+  mesh.bind(new THREE.Skeleton(list));
+  return { root, bones, mesh, verts: P.length / 3 };
+}
+const FIGURE = buildFigure();
+scene.add(FIGURE.root);
+
+// ------------------------------------------------------------------ feathers
+// Each wing: coverts on the upper arm, secondaries on the forearm, primaries on the hand.
+// [segment, position along it, length (figure m), fan angle from the arm toward the trailing edge]
+const WING = [
+  ["upper", 0.15, 0.30, 100], ["upper", 0.45, 0.33, 98], ["upper", 0.75, 0.36, 96],
+  ["fore", 0.05, 0.46, 94], ["fore", 0.30, 0.50, 90], ["fore", 0.55, 0.53, 86], ["fore", 0.80, 0.56, 81],
+  ["hand", 0.05, 0.62, 74], ["hand", 0.30, 0.66, 64], ["hand", 0.55, 0.70, 52], ["hand", 0.80, 0.72, 40], ["hand", 1.0, 0.70, 28],
+];
+const FEATHERS = [];
+for (const sd of ["L", "R"]) WING.forEach((w, i) => FEATHERS.push({ side: sd, seg: w[0], s: w[1], len: w[2], fan: w[3], i }));
+// detach order: outer primaries go first, a few coverts stay to the end
+const hash = n => { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
+FEATHERS.forEach((f, k) => {
+  const outer = (WING.length - 1 - f.i) / (WING.length - 1);            // 0 = outermost
+  f.td = f.i < 2 ? 99 : 6.55 + outer * 2.4 + hash(k) * 0.55 + (f.side === "R" ? 0.18 : 0);
+  f.burn = hash(k + 40) < 0.6 ? 1.0 + hash(k + 7) * 1.4 : 99;          // most burn out; some drift down to the sea
+  f.vx = (hash(k + 13) - 0.65) * 0.55; f.vy = 0.15 + hash(k + 21) * 0.35; f.spin = (hash(k + 33) - 0.5) * 7.0;
+});
+function featherGeometry() {
+  const A = 16, C = 7, P = [], N = [], UV = [], I = [];
+  for (let a = 0; a <= A; a++) {
+    const v = a / A;
+    const w = 0.105 * Math.pow(Math.sin(Math.PI * Math.min(1, v * 1.06 + 0.02)), 0.75) * (1 - 0.25 * v) + 0.004;
+    for (let c = 0; c <= C; c++) {
+      const u = c / C * 2 - 1;
+      P.push(u * w, -v, 0.004 * (1 - u * u)); N.push(0, 0, 1); UV.push(u, v);
+    }
+  }
+  for (let a = 0; a < A; a++) for (let c = 0; c < C; c++) { const i = a * (C + 1) + c; I.push(i, i + C + 1, i + 1, i + 1, i + C + 1, i + C + 2); }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(P, 3));
+  g.setAttribute("normal", new THREE.Float32BufferAttribute(N, 3));
+  g.setAttribute("aUv", new THREE.Float32BufferAttribute(UV, 2));
+  g.setIndex(I);
+  return g;
+}
+const fGeo = featherGeometry();
+const fHeat = new THREE.InstancedBufferAttribute(new Float32Array(FEATHERS.length), 1);
+const fAlpha = new THREE.InstancedBufferAttribute(new Float32Array(FEATHERS.length).fill(1), 1);
+fGeo.setAttribute("aHeat", fHeat); fGeo.setAttribute("aAlpha", fAlpha);
+const feathers = new THREE.InstancedMesh(fGeo, featherMat, FEATHERS.length);
+feathers.frustumCulled = false;
+scene.add(feathers);
+
+// drops: 18 wax drips + 46 spray droplets
+const WAX = Array.from({ length: 18 }, (_, k) => ({ side: k % 2 ? "L" : "R", t0: 6.7 + k * 0.13 + hash(k + 90) * 0.1, vx: (hash(k + 91) - 0.5) * 0.25 }));
+const SPRAY = Array.from({ length: 46 }, (_, k) => ({ vx: (hash(k + 200) - 0.5) * 1.6, vy: 1.2 + hash(k + 210) * 2.4, z: (hash(k + 220) - 0.5) * 0.4, delay: hash(k + 230) * 0.14, size: 0.022 + hash(k + 240) * 0.026 }));
+const dGeo = new THREE.PlaneGeometry(1, 1);
+const dKind = new THREE.InstancedBufferAttribute(new Float32Array(WAX.length + SPRAY.length), 1);
+const dAlpha = new THREE.InstancedBufferAttribute(new Float32Array(WAX.length + SPRAY.length), 1);
+for (let k = WAX.length; k < WAX.length + SPRAY.length; k++) dKind.array[k] = 1;
+dGeo.setAttribute("aKind", dKind); dGeo.setAttribute("aAlpha", dAlpha);
+const drops = new THREE.InstancedMesh(dGeo, dropMat, WAX.length + SPRAY.length);
+drops.frustumCulled = false;
+scene.add(drops);
+
+// ------------------------------------------------------------------ easing and tracks
+const clamp01 = x => Math.min(1, Math.max(0, x));
+const easeInOutCubic = u => u < 0.5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2;
+const smooth = (a, b, x) => { const u = clamp01((x - a) / (b - a)); return u * u * (3 - 2 * u); };
+const gravityEase = u => u * u * (1.35 - 0.35 * u);                   // accelerating, like a fall
+const flightEase = u => 1 - Math.pow(1 - u, 1.7);                       // already flying when he enters, slowing near the sun
+function catmull(pts, k) {
+  const seg = Math.min(pts.length - 2, Math.floor(k * (pts.length - 1))), lt = k * (pts.length - 1) - seg;
+  const p0 = pts[Math.max(0, seg - 1)], p1 = pts[seg], p2 = pts[seg + 1], p3 = pts[Math.min(pts.length - 1, seg + 2)];
+  const c = new V3(), t2 = lt * lt, t3 = t2 * lt;
+  for (const ax of ["x", "y", "z"]) c[ax] = 0.5 * ((2 * p1[ax]) + (-p0[ax] + p2[ax]) * lt + (2 * p0[ax] - 5 * p1[ax] + 4 * p2[ax] - p3[ax]) * t2 + (-p0[ax] + 3 * p1[ax] - 3 * p2[ax] + p3[ax]) * t3);
+  return c;
+}
+// [t0, t1, target or {path}, ease]
+function samplePos(track, t) {
+  let v = track[0][2].path ? track[0][2].path.at(-1) : track[0][2];
+  for (const [t0, t1, val, ease] of track) {
+    if (t < t0) break;
+    const u = t1 > t0 ? clamp01((t - t0) / (t1 - t0)) : 1, e = (ease || easeInOutCubic)(u);
+    if (val.path) v = u >= 1 ? val.path.at(-1) : catmull([v, ...val.path], e);
+    else v = u >= 1 ? val : v.clone().lerp(val, e);
+  }
+  return v.clone();
+}
+function orientHB(head, belly) {
+  const y = head.clone().normalize(), z = belly.clone().addScaledVector(y, -belly.dot(y)).normalize(), x = new V3().crossVectors(y, z);
+  return new Q().setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z));
+}
+
+let T = null, IMPACT = { t: 14.6, x: 0 };
+function buildTracks() {
+  const offL = new V3(view.l - 1.9, -0.75, 0.3);
+  T = {
+    root: [
+      [0, 0, offL],
+      [0.15, 6.1, { path: [new V3(-1.85, -0.72, 0.32), new V3(-0.55, -0.12, 0.36), new V3(0.4, 0.22, 0.33)] }, flightEase],
+      [6.1, 8.3, new V3(0.55, 0.30, 0.3)],
+      [8.45, 15.3, { path: [new V3(0.42, 0.34, 0.36), new V3(0.08, 0.05, 0.55), new V3(-0.32, -0.45, 0.68), new V3(-0.48, -1.3, 0.5), new V3(-0.55, -2.4, 0.4)] }, gravityEase],
+      [19.95, 19.95, offL],                     // snap back while he's under the sea
+    ],
+  };
+  // when the pelvis crosses the horizon: the splash
+  for (let t = 11; t < 16; t += 1 / 240) { const p = samplePos(T.root, t); if (p.y < SEA_Y + 0.3) { IMPACT = { t, x: p.x }; break; } }   // head-first: the head reaches the water first
+}
+
+// ------------------------------------------------------------------ animation
+const FLY = { f0: 1.15, f1: 1.6 };
+// Wingbeat phase: the frequency ramps smoothly from f0 to f1 between 6.4 s
+// and 8.2 s; the phase is its exact integral, so the beat never jumps.
+function flapPhase(t) {
+  const a = 6.4, L = 1.8, u = clamp01((t - a) / L);
+  const ramped = L * (u * u * u - u * u * u * u / 2) + Math.max(0, t - a - L);   // integral of smoothstep
+  const ragged = t > 8.2 ? 0.35 * Math.sin((t - 8.2) * 5.0) * smooth(8.2, 8.6, t) : 0;
+  return 2 * Math.PI * (FLY.f0 * t + (FLY.f1 - FLY.f0) * ramped) + ragged;
+}
+const W = t => ({
+  flap: smooth(0.3, 1.0, t) * (1 - smooth(8.4, 9.3, t)),
+  reach: smooth(6.1, 7.1, t) * (1 - smooth(8.0, 8.7, t)),
+  panic: smooth(7.9, 8.7, t) * (1 - smooth(9.0, 9.6, t)),
+  flail: smooth(8.6, 9.8, t) * (1 - smooth(13.4, 14.3, t)) * (REDUCED ? 0.6 : 1),
+  dive: smooth(13.5, 14.4, t),
+});
+// local Euler angles (degrees) for every joint at time t
+function jointAngles(t) {
+  const w = W(t), A = {};
+  for (const n of JN) A[n] = [0, 0, 0];
+  const add = (n, x, y, z, k = 1) => { A[n][0] += x * k; A[n][1] += y * k; A[n][2] += z * k; };
+  // flight: wingbeat with the elbow and wrist lagging the shoulder (overlapping action)
+  const ph = flapPhase(t), amp = 36 + 14 * w.panic;
+  const beat = (lag) => Math.sin(ph - lag) + 0.22 * Math.sin(2 * (ph - lag));
+  for (const [sd, sg] of [["L", 1], ["R", -1]]) {
+    add("shoulder." + sd, 8 * Math.sin(ph - 0.3), 0, sg * amp * beat(0), w.flap);
+    add("elbow." + sd, 0, -sg * 6, sg * 16 * Math.sin(ph - 0.7), w.flap);
+    add("wrist." + sd, 0, 0, sg * 20 * Math.sin(ph - 1.25), w.flap);
+    add("hip." + sd, -6 * Math.sin(ph - 1.9 + (sg > 0 ? 0 : 0.5)), 0, sg * 3, w.flap);
+    add("knee." + sd, 10 + 7 * Math.sin(ph - 2.4), 0, 0, w.flap);
+  }
+  add("neck", -18, 0, 0, w.flap);                    // flying belly-down, the head lifts to see ahead
+  add("spine", -6 * Math.sin(ph - 0.9), 0, 0, w.flap);
+  // reaching for the sun
+  add("shoulder.L", 0, -20, 48, w.reach); add("elbow.L", 0, 0, 12, w.reach);
+  add("shoulder.R", 0, 20, -22, w.reach);
+  add("neck", -16, 0, 6, w.reach);
+  // the fall: limbs flail on unrelated rhythms, every joint lagging its parent
+  const f = (hz, phs, lag = 0) => Math.sin(2 * Math.PI * hz * t + phs - lag);
+  add("shoulder.L", 32 * f(0.62, 1.0), 0, 70 * f(0.9, 0.0), w.flail);
+  add("elbow.L", 0, 0, 40 + 38 * f(1.25, 0.5, 0.5), w.flail);
+  add("wrist.L", 0, 0, 25 * f(1.6, 0.3, 0.9), w.flail);
+  add("shoulder.R", 32 * f(0.66, 2.4), 0, -70 * f(0.84, 1.7), w.flail);
+  add("elbow.R", 0, 0, -(40 + 38 * f(1.18, 2.1, 0.5)), w.flail);
+  add("wrist.R", 0, 0, -25 * f(1.5, 2.0, 0.9), w.flail);
+  add("hip.L", -38 * f(0.74, 0.3), 0, 12 * f(0.5, 1.1), w.flail);
+  add("knee.L", 34 + 32 * f(1.08, 1.0, 0.6), 0, 0, w.flail);
+  add("hip.R", -38 * f(0.8, 2.0), 0, -12 * f(0.55, 2.6), w.flail);
+  add("knee.R", 34 + 32 * f(1.02, 2.7, 0.6), 0, 0, w.flail);
+  add("spine", 14 * f(0.5, 0.2), 8 * f(0.42, 1.0), 9 * f(0.6, 2.0), w.flail);
+  add("chest", 8 * f(0.5, 0.2, 0.4), 0, 6 * f(0.6, 2.0, 0.4), w.flail);
+  add("neck", 26 * f(0.7, 1.0, 0.5), 18 * f(0.45, 2.2), 0, w.flail);
+  // the dive: arms over the head, legs together and straight
+  add("shoulder.L", 0, 0, 150, w.dive); add("shoulder.R", 0, 0, -150, w.dive);
+  add("elbow.L", 0, 0, -8, w.dive); add("elbow.R", 0, 0, 8, w.dive);
+  add("hip.L", 0, 0, -3, w.dive); add("hip.R", 0, 0, 3, w.dive);
+  add("neck", 12, 0, 0, w.dive);
+  return A;
+}
+
+// Body orientation: belly-down glide (head along the flight path), upright
+// reaching, then a tumble of one and a half turns that ends head-first.
+const qFly = orientHB(new V3(1, 0.52, 0), new V3(0, -0.55, 1));
+const qReach = orientHB(new V3(0.55, 1, 0), new V3(0.1, -0.15, 1));
+function rootQuat(t) {
+  let q = qFly.clone();
+  q.slerp(qReach, easeInOutCubic(clamp01((t - 6.0) / 1.4)));
+  if (t > 8.2) {
+    const tau = t - 8.2;
+    const spin = 3.0 * Math.PI * Math.pow(clamp01(tau / 6.3), 1.45);           // head over heels, speeding up
+    const roll = 0.85 * Math.sin(tau * 1.15) * smooth(0, 1.5, tau) * (1 - smooth(5.0, 6.2, tau));
+    const tumble = new Q().setFromAxisAngle(new V3(0, 0, 1), spin).multiply(qReach.clone()).multiply(new Q().setFromAxisAngle(new V3(0, 1, 0), roll));
+    q.slerp(tumble, easeInOutCubic(clamp01(tau / 0.9)));
+  }
+  return q;
+}
+
+const pose = { p: {}, q: {} };
+for (const n of JN) { pose.p[n] = new V3(); pose.q[n] = new Q(); }
+const eul = new THREE.Euler();
+function evalFigure(t, out = pose) {
+  const A = jointAngles(t);
+  const rootP = samplePos(T.root, t);
+  rootP.y += 0.035 * Math.sin(flapPhase(t) + Math.PI) * W(t).flap;       // the body lifts on each downstroke
+  const rq = rootQuat(t);
+  for (const n of JN) {
+    const a = A[n], loc = new Q().setFromEuler(eul.set(a[0] * DEG, a[1] * DEG, a[2] * DEG, "XYZ"));
+    const par = PAR[n];
+    if (!par) { out.p[n].copy(rootP); out.q[n].copy(rq).multiply(loc); continue; }
+    out.p[n].copy(OFF[n]).applyQuaternion(out.q[par]).add(out.p[par]);
+    out.q[n].copy(out.q[par]).multiply(loc);
+  }
+  return out;
+}
+function applyFigure(p) {
+  for (const n of JN) { const b = FIGURE.bones[n]; b.position.copy(p.p[n]); b.quaternion.copy(p.q[n]); }
+  FIGURE.root.updateMatrixWorld(true);
+}
+
+// ------------------------------------------------------------------ feathers, drops and splash
+const SEG = { upper: ["shoulder", "elbow"], fore: ["elbow", "wrist"], hand: ["wrist", "hand"] };
+const mtx = new THREE.Matrix4(), qf = new Q(), sc = new V3();
+const scratch = { p: {}, q: {} };
+for (const n of JN) { scratch.p[n] = new V3(); scratch.q[n] = new Q(); }
+function attachedFeather(f, p, t) {
+  const [a, b] = SEG[f.seg].map(n => n + "." + f.side);
+  const pos = p.p[a].clone().lerp(p.p[b], f.s);
+  // fan opens on the downstroke, folds a little on the upstroke
+  const spread = 1 + 0.10 * Math.sin(flapPhase(t) - 0.9) * W(t).flap;
+  const fan = f.fan * spread * DEG;
+  const sg = f.side === "L" ? 1 : -1;
+  const theta = Math.atan2(sg * Math.cos(fan), Math.sin(fan));              // the vane (local -Y) points out and back
+  const q = p.q[a].clone().multiply(qf.setFromAxisAngle(new V3(0, 0, 1), theta));
+  q.multiply(new Q().setFromAxisAngle(new V3(0, 1, 0), sg * 0.25));          // a little twist so vanes catch the light
+  return { pos, q };
+}
+function updateFeathers(t, p) {
+  FEATHERS.forEach((f, k) => {
+    let pos, q, heat = 0, alpha = 1;
+    const L = f.len * FIG;
+    const pre = smooth(6.0, Math.min(f.td, 9.5), t) * 0.75 * (f.td < 50 ? 1 : 0.5);
+    if (t < f.td) {
+      ({ pos, q } = attachedFeather(f, p, t));
+      heat = pre;
+      // loosening: a shiver before it lets go
+      if (t > f.td - 0.5) q.multiply(new Q().setFromAxisAngle(new V3(1, 0, 0), 0.25 * Math.sin((t - f.td) * 40) * smooth(f.td - 0.5, f.td, t)));
+    } else {
+      const tau = t - f.td;
+      const start = attachedFeather(f, evalFigure(f.td, scratch), f.td);
+      pos = start.pos.clone();
+      // drift: a short updraft from the heat, then a fluttering fall with terminal speed
+      pos.x += f.vx * tau + 0.12 * Math.sin(tau * 2.3 + k);
+      pos.y += f.vy * tau - 0.32 * tau * tau / (1 + 0.45 * tau);
+      pos.z += 0.05 * Math.sin(tau * 1.7 + k);
+      q = start.q.clone().multiply(new Q().setFromAxisAngle(new V3(0, 1, 0), f.spin * tau)).multiply(new Q().setFromAxisAngle(new V3(1, 0, 0), 0.6 * Math.sin(tau * 3.1 + k)));
+      heat = Math.min(1, 0.75 + tau * 0.6);
+      if (f.burn < 50) { heat = Math.min(1, 0.8 + tau / f.burn); alpha = 1 - smooth(f.burn * 0.55, f.burn, tau); }
+      else heat = Math.max(0.15, 0.85 - tau * 0.25);                          // cools as it drifts down
+      if (t > 19.4) alpha *= 1 - smooth(19.4, 19.9, t);
+    }
+    if (t < 0.4) alpha = 0;                                                     // offscreen reset at the loop seam
+    mtx.compose(pos, q, sc.set(L, L, L));
+    feathers.setMatrixAt(k, mtx);
+    fHeat.array[k] = heat; fAlpha.array[k] = alpha;
+  });
+  feathers.instanceMatrix.needsUpdate = true; fHeat.needsUpdate = true; fAlpha.needsUpdate = true;
+}
+function updateDrops(t) {
+  let k = 0;
+  for (const d of WAX) {
+    const tau = t - d.t0;
+    let a = 0, pos = new V3(0, -99, 0), s = 0.018;
+    if (tau > 0 && tau < 2.2) {
+      const src = evalFigure(d.t0, scratch).p["wrist." + d.side];
+      pos = src.clone().add(new V3(d.vx * tau, -0.5 * 2.6 * tau * tau, 0.02));
+      a = smooth(0, 0.1, tau) * (1 - smooth(1.4, 2.2, tau)) * (pos.y > SEA_Y ? 1 : 0);
+      s = 0.016 * (1 + 0.6 * Math.min(1, tau * 2));
+    }
+    mtx.compose(pos, new Q(), sc.set(s, s * (1 + Math.min(0.8, tau * 0.8)), 1));
+    drops.setMatrixAt(k, mtx); dAlpha.array[k++] = a;
+  }
+  for (const d of SPRAY) {
+    const tau = t - IMPACT.t - d.delay;
+    let a = 0, pos = new V3(0, -99, 0);
+    if (tau > 0 && tau < 1.6) {
+      pos = new V3(IMPACT.x + d.vx * tau, SEA_Y + d.vy * tau - 0.5 * 6.5 * tau * tau, 0.35 + d.z);
+      a = pos.y > SEA_Y - 0.01 ? 1 - smooth(0.9, 1.5, tau) : 0;
+    }
+    mtx.compose(pos, new Q(), sc.set(d.size, d.size, 1));
+    drops.setMatrixAt(k, mtx); dAlpha.array[k++] = a;
+  }
+  drops.instanceMatrix.needsUpdate = true; dAlpha.needsUpdate = true;
+}
+
+function update(t) {
+  TIME.value = t;
+  // the sun flares as he climbs into it, then settles
+  SUNI.value = 1 + 0.55 * smooth(6.0, 7.6, t) * (1 - smooth(8.6, 10.5, t)) + 0.04 * Math.sin(t * 7.3) * Math.sin(t * 3.1);
+  const p = evalFigure(t);
+  applyFigure(p);
+  updateFeathers(t, p);
+  updateDrops(t);
+  const since = t - IMPACT.t;
+  RIPPLE.value.set(IMPACT.x, since, since > 0 ? 1 - smooth(2.4, 4.0, since) : 0, 0);
+}
+
+// ------------------------------------------------------------------ post-processing (same as Holo Arm and Lamp)
+const rtOpts = { type: THREE.HalfFloatType, samples: 4 };
+const bloomComposer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(1, 1, rtOpts));
+bloomComposer.renderToScreen = false;
+bloomComposer.addPass(new RenderPass(scene, camera));
+const bloomPass = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.9, 0.35, 0.15);
+bloomComposer.addPass(bloomPass);
+const finalComposer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(1, 1, rtOpts));
+finalComposer.addPass(new RenderPass(scene, camera));
+const mixPass = new ShaderPass(new THREE.ShaderMaterial({
+  uniforms: { baseTexture: { value: null }, bloomTexture: { value: bloomComposer.renderTarget2.texture } },
+  vertexShader: /* glsl */`varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+  fragmentShader: /* glsl */`uniform sampler2D baseTexture, bloomTexture; varying vec2 vUv;
+    void main(){ vec4 base = texture2D(baseTexture, vUv); gl_FragColor = vec4(base.rgb + texture2D(bloomTexture, vUv).rgb, base.a); }`,
+}), "baseTexture");
+mixPass.needsSwap = true;
+finalComposer.addPass(mixPass);
+finalComposer.addPass(new OutputPass());
+
+function resize() {
+  const w = Math.max(1, innerWidth), h = Math.max(1, innerHeight), dpr = Math.min(devicePixelRatio || 1, 2.5);
+  renderer.setPixelRatio(dpr); renderer.setSize(w, h, false);
+  for (const c of [bloomComposer, finalComposer]) { c.setPixelRatio(dpr); c.setSize(w, h); }
+  bloomPass.resolution.set(w * dpr, h * dpr);
+  bloomPass.setSize(w * dpr, h * dpr);
+  const aspect = w / h, tanH = Math.tan(camera.fov * DEG / 2);
+  const halfW0 = (SAFE.r - SAFE.l) / 2, halfH0 = (SAFE.t - SAFE.b) / 2;
+  const halfH = Math.max(halfH0, halfW0 / aspect), halfW = halfH * aspect;
+  const cx = (SAFE.l + SAFE.r) / 2, cy = (SAFE.b + SAFE.t) / 2, D = halfH / tanH;
+  camera.aspect = aspect; camera.position.set(cx, cy, D); camera.lookAt(cx, cy, 0); camera.updateProjectionMatrix();
+  Object.assign(view, { l: cx - halfW, r: cx + halfW, b: cy - halfH, t: cy + halfH });
+  wallMat.uniforms.uView.value.set(view.l, view.b, view.r, view.t);
+  buildTracks();
+}
+
+// ------------------------------------------------------------------ clock, controls, HUD
+const STEP = 1 / 120;
+let simT = 0, acc = 0, last = performance.now(), playing = !params.has("pause"), dirty = true;
+const hud = document.getElementById("hud");
+let hudTimer = setTimeout(() => hud.classList.add("hide"), 3000);
+function poke() { hud.classList.remove("hide"); clearTimeout(hudTimer); hudTimer = setTimeout(() => hud.classList.add("hide"), 3000); }
+function seek(t) { simT = ((t % LOOP) + LOOP) % LOOP; acc = 0; dirty = true; }
+addEventListener("keydown", e => {
+  if (e.code === "Space") { playing = !playing; e.preventDefault(); }
+  else if (e.key === "r" || e.key === "R") seek(0);
+  else if (/^[1-6]$/.test(e.key)) seek(BEATS[+e.key - 1]);
+  else return;
+  poke();
+});
+function render() { BLOOM.value = 1; bloomComposer.render(); BLOOM.value = 0; finalComposer.render(); }
+let fpsN = 0, fpsT = performance.now();
+function frame(now) {
+  const dt = Math.min(0.1, Math.max(0, (now - last) / 1000)); last = now;   // clamped: a tab switch never jumps
+  if (playing) { acc += dt * SPEED; while (acc >= STEP) { simT += STEP; acc -= STEP; } if (simT >= LOOP) seek(simT); }
+  if (playing || dirty) { update(simT); render(); dirty = false; }
+  if (DEV) { fpsN++; if (now - fpsT > 2000) { console.log(`fps ${(fpsN * 1000 / (now - fpsT)).toFixed(1)}`); fpsN = 0; fpsT = now; } }
+  requestAnimationFrame(frame);
+}
+resize();
+addEventListener("resize", () => { resize(); dirty = true; });
+if (DEV) { console.log("figure vertices:", FIGURE.verts, "impact:", IMPACT); window.__dbg = { evalFigure, view, IMPACT: () => IMPACT, samplePos: t => samplePos(T.root, t) }; }
+window.__scene = { seek: t => { seek(t); update(simT); render(); dirty = false; }, ready: true };
+if (params.has("t")) { seek(+params.get("t")); playing = false; }
+requestAnimationFrame(t => { last = t; frame(t); });
+</script>
+</body>
+</html>

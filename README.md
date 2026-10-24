@@ -144,6 +144,26 @@ With `seconds` a step ramps (30 steps per second); without it, it jumps. A ramp 
 ### Preview a show in the browser
 With `python3 -m http.server 8000` running, open <http://localhost:8000/preview/show.html>. It plays any show with all its layers combined the way a projector adds light, with a timeline you can scrub. Rectangles marked `preview` in each show file set where each surface sits on the stage.
 
+## Scene: holographic arm and lamp
+
+`scenes/holo_arm_lamp.html` is a standalone Three.js piece, a 20-second seamless loop recreating a projection-mapping clip:
+
+1. **Calibration (0–5 s).** A mint grid is keystoned onto the wall corner by corner. A highlight blinks on one cell, lands on the lamp and flashes, and the grid fades from the edges inward.
+2. **Orb drop (5–8 s).** A wireframe arm glides in from the top, palm down, carrying a glowing orb. Its fingers open one after another, and the orb falls into the shade and lights it fire orange.
+3. **Flame grab (8–11 s).** The hand closes on the shade, its fingertips catching the orange glow. It pulls the flame out as an orb and lifts away, wrist first.
+4. **Relight (11–13 s).** The arm swings back down and tosses the orb into the lamp.
+5. **Finger gun (13–19 s).** The arm comes in from the right and forms a finger gun. Three shots with wrist recoil send bolts that switch the lamp red, then green, then warm white.
+6. **Out (19–20 s).** The hand relaxes and retracts, and the lamp fades off.
+
+Open the file in a browser (it loads three.js 0.160.0 from jsDelivr). Space pauses, R restarts, and 1–6 jump to each beat. Add `?dev` to log FPS, `?t=12` to open paused at a time, and `?hand=procedural` to see the fallback hand.
+
+How it's built:
+- The hand is the WebXR generic hand (`right.glb`, MIT, © 2019 Amazon). It loads from jsDelivr, then from a copy embedded in the file, then falls back to a procedural capsule hand with the same 25 joint names. The joints in the model aren't a hierarchy, so the scene runs its own forward kinematics and writes each joint's pose. The forearm and upper arm come from two-bone inverse kinematics, and the upper arm always extends past the edge of the frame.
+- Every line is drawn in the shader with `fwidth()` anti-aliasing: a lattice of about 120 cells along the arm, with brighter dots at the intersections. The lattice fades out before its cells get small enough to shimmer. The rim is a tight fresnel term (power 3.5) that whitens at the fingertips.
+- Bloom is selective. It only sees thin bright features (rim, orb, lamp emission, grid lines), and it's composited over a sharp full-resolution pass rendered into 4× MSAA targets. That way the wall never blooms and the wireframe stays crisp.
+- Authored hex colors are pre-compensated for ACES tone mapping at exposure 1.1, so flat surfaces render at their hex values.
+- Motion is a pure function of time. Every move eases with easeInOutCubic, the shoulder leads the elbow by 40 ms and the wrist by 80 ms, and the fingers are staggered 32 ms apart with a ~4° settle overshoot. Orientations blend with quaternion slerp. The hand breathes and its fingers flutter while it's still. The orb follows the hand on a critically damped spring, simulated at a fixed 120 Hz step.
+
 ## Development
 
 ```
@@ -166,6 +186,7 @@ madmapper_agent/
   cli.py         command-line entry point
 materials/       shaders: HandStringVisualizer, GridSweep, SurfaceFill, HoloHands, ChainHang
 shows/           show scripts (timelines)
+scenes/          standalone rendered pieces (Three.js)
 preview/         browser previews: index.html (one shader), show.html (a show)
 scripts/check_setup.py
 tests/

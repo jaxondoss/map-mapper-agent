@@ -112,6 +112,7 @@ Four shaders and four show scripts recreate a projection-mapping sequence: a gri
 | `HoloHands.fs` | Two 3D hands made of glowing dots that reach in, pinch, and dissolve into sparks | `reach`, `pinch`, `dissolve` (each 0→1); `target` is the pinch point |
 | `ChainHang.fs` | A glowing chain dropping to a clasp on a real picture frame, soft wall light, and a swaying shadow | `drop` 0→1; line `frameCenter`/`frameSize` up with the real frame |
 | `IcarusFall.fs` | The whole Icarus Falling scene (below), live in the shader | plays on its own; `speed`, `timeOffset`, `projector`, `glow`, `intensity` |
+| `HoloArmLamp.fs` | The whole Holo Arm and Lamp scene (below), live in the shader | plays on its own; same controls as `IcarusFall.fs` |
 
 The first four each have a `loop` checkbox that plays its animation on its own, which is handy while you line things up in MadMapper.
 
@@ -165,6 +166,8 @@ How it's built:
 - Authored hex colors are pre-compensated for ACES tone mapping at exposure 1.1, so flat surfaces render at their hex values.
 - Motion is a pure function of time. Every move eases with easeInOutCubic, the shoulder leads the elbow by 40 ms and the wrist by 80 ms, and the fingers are staggered 32 ms apart with a ~4° settle overshoot. Orientations blend with quaternion slerp. The hand breathes and its fingers flutter while it's still. The orb follows the hand on a critically damped spring, simulated at a fixed 120 Hz step.
 
+`materials/HoloArmLamp.fs` is the same scene as an ISF material for MadMapper, with the same controls as `IcarusFall.fs` (`speed`, `timeOffset`, `projector`, `glow`, `intensity`). It uses the procedural hand, since a shader can't load the scanned model. Every pixel evaluates the arm for the current time (tracks, two-bone IK, finger forward kinematics) and ray traces the 19 hand capsules, the forearm, the upper arm and the elbow, with the lattice coordinates the browser assigns. The wall, sconce, calibration grid, orb and bolts are drawn analytically. The orb's spring-follow path is sampled at 60 Hz from the browser's own simulation and baked in, as are the hand rig, the poses and the tracks, which use the 16:9 framing (they stay off-screen at other aspect ratios). In projector mode the wall is black and only light is drawn: the lamp's glow on an even wall, the grid, the shade's emission and flame, the arm, the orb and the bolts. It's heavier than `IcarusFall.fs`, so lower the material's resolution if it stutters.
+
 ## Scene: Icarus falling
 
 `scenes/icarus_fall.html` uses the same holographic look and is another 20-second seamless loop. Icarus flies too close to a projected sun and falls into a projected sea:
@@ -199,7 +202,7 @@ madmapper_agent/
   shows.py       show scripts: compile and play timelines
   agent.py       tool definitions and the Claude tool-use loop
   cli.py         command-line entry point
-materials/       shaders: HandStringVisualizer, GridSweep, SurfaceFill, HoloHands, ChainHang, IcarusFall
+materials/       shaders: HandStringVisualizer, GridSweep, SurfaceFill, HoloHands, ChainHang, IcarusFall, HoloArmLamp
 shows/           show scripts (timelines)
 scenes/          standalone rendered pieces (Three.js)
 preview/         browser previews: index.html (one shader), show.html (a show)

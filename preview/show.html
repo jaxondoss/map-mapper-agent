@@ -159,7 +159,10 @@ try {
   const first = qs.get("show") || (names.includes("koi_frame") ? "koi_frame" : names[0]);
   pick.value = first;
   await loadShow(first);
-  if (qs.has("t")) { clock = +qs.get("t"); render(clock); }
+  if (qs.has("t")) {           // fixed frame, for screenshots and recording
+    clock = +qs.get("t"); render(clock);
+    window.__renderAt = render;
+  }
   else requestAnimationFrame(tick);
   window.__isfReady = true;
 } catch (e) { fail(String(e.message || e)); }

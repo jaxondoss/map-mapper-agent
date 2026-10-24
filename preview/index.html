@@ -123,8 +123,9 @@ try {
     layer.values[k] = v.includes("|") ? v.split("|").map(Number) : (v === "true" || v === "false" ? v === "true" : +v);
   }
   syncControls();
-  if (qs.has("t")) {           // fixed frame, for screenshots
+  if (qs.has("t")) {           // fixed frame, for screenshots and recording
     render(+qs.get("t"));
+    window.__renderAt = render;
   } else {
     const t0 = performance.now();
     const loop = () => { render((performance.now() - t0) / 1000); requestAnimationFrame(loop); };

@@ -174,7 +174,7 @@ How it's built:
 4. **The fall (9.5–14.5 s).** He tumbles one and a half turns head over heels, limbs flailing on unrelated rhythms, swings toward the viewer, and straightens into a dive.
 5. **The sea (14.5–20 s).** He plunges through the horizon. Spray flies up, perspective ripple rings spread across a wave lattice, and the last feathers drift down.
 
-Same controls as the arm scene (Space, R, 1–6, `?dev`, `?t=`). The figure is procedural: 21 joints of tapered capsules, skinned with blended weights at the joints. The 24 feathers are instanced vanes with fwidth() outlines, rachis and barbs. Wax drips and spray are crisp instanced discs. The sea is drawn in the wall shader as a log-spaced wave lattice with ripple rings on the water plane.
+Same controls as the arm scene (Space, R, 1–6, `?dev`, `?t=`). Add `?projector` to drop the wall and sky glow, leaving pure light on black so unlit areas of the real wall stay dark; record from this mode for MadMapper. The figure is procedural: 21 joints of tapered capsules, skinned with blended weights at the joints. The 24 feathers are instanced vanes with fwidth() outlines, rachis and barbs. Wax drips and spray are crisp instanced discs. The sea is drawn in the wall shader as a log-spaced wave lattice with ripple rings on the water plane.
 
 ## Development
 

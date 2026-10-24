@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Show Preview</title>
+<style>
+  :root { color-scheme: dark; --bg: #0b0b0f; --panel: #16161d; --text: #e8e8ee; --muted: #9a9aa8; --accent: #7c5cff; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, sans-serif; display: flex; flex-direction: column; height: 100vh; }
+  #stage { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0; padding: 12px; }
+  #wrap { position: relative; aspect-ratio: 16 / 9; max-width: 100%; max-height: 100%; width: 100%; }
+  #wrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #c { background: #000; }
+  #controls { background: var(--panel); padding: 10px 14px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  button, select { background: #24242e; color: var(--text); border: 1px solid #33333f; border-radius: 6px; padding: 6px 10px; font: inherit; cursor: pointer; }
+  #scrub { flex: 1; min-width: 160px; }
+  #time { font-variant-numeric: tabular-nums; color: var(--muted); min-width: 92px; }
+  #desc { color: var(--muted); font-size: 12px; padding: 0 14px 10px; background: var(--panel); margin: 0; }
+  #err { color: #ff7a7a; white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 12px; padding: 0 14px; }
+  a { color: var(--accent); }
+  body.bare #controls, body.bare #desc { display: none; } body.bare #stage { padding: 0; }
+</style>
+</head>
+<body>
+<div id="stage"><div id="wrap"><canvas id="c"></canvas><canvas id="overlay"></canvas></div></div>
+<div id="controls">
+  <select id="pick" aria-label="Show"></select>
+  <button id="play">Pause</button>
+  <input id="scrub" type="range" min="0" max="1" step="0.01" value="0" aria-label="Timeline">
+  <span id="time">0.0 / 0.0s</span>
+  <label><input id="outlines" type="checkbox" checked> Surfaces</label>
+  <a href="index.html">Single shader →</a>
+</div>
+<p id="desc"></p>
+<div id="err"></div>
+<script type="module">
+import { IsfLayer, AudioFeed } from "./isf.js";
+
+// Plays a show script the same way madmapper_agent/shows.py does: each step
+// either jumps a value or ramps it from "from" (or the last value) to "to".
+
+const qs = new URLSearchParams(location.search);
+const canvas = document.getElementById("c"), overlay = document.getElementById("overlay");
+const gl = canvas.getContext("webgl", { preserveDrawingBuffer: true });
+if (qs.has("bare")) document.body.classList.add("bare");
+const audio = new AudioFeed();
+const shaderCache = {};
+let show, layers = {}, tracks = {}, duration = 0, playing = !qs.has("t"), clock = 0, last = performance.now();
+
+function fail(msg) { document.getElementById("err").textContent = msg; window.__isfError = msg; console.error(msg); }
+
+async function listShows() {
+  try {
+    const html = await (await fetch("../shows/")).text();
+    const names = [...html.matchAll(/href="([^"]+)\.json"/g)].map(m => decodeURIComponent(m[1]));
+    if (names.length) return names;
+  } catch (e) {}
+  return ["koi_frame"];
+}
+
+// Group steps into per-target tracks: "opacity:<surface>" or "set:<Material.param>".
+function buildTracks(steps) {
+  const out = {};
+  [...steps].map((s, i) => ({ ...s, _i: i }))
+    .sort((a, b) => (a.at || 0) - (b.at || 0) || a._i - b._i)
+    .forEach(s => {
+      const key = "opacity" in s ? "opacity:" + s.opacity : "set" in s ? "set:" + s.set : null;
+      if (key) (out[key] ||= []).push(s);
+    });
+  return out;
+}
+
+function valueAt(track, t, isOpacity) {
+  let v = isOpacity ? 0 : undefined;
+  for (const s of track) {
+    const at = s.at || 0, secs = s.seconds || 0;
+    if (t < at) break;
+    if (secs > 0) {
+      const from = s.from ?? v ?? 0, f = Math.min(1, (t - at) / secs);
+      v = from + (s.to - from) * f;
+    } else v = s.to;
+  }
+  return v;
+}
+
+async function loadShow(name) {
+  show = await (await fetch(`../shows/${name}.json`)).json();
+  document.getElementById("desc").textContent = show.description || "";
+  layers = {};
+  for (const [surface, cfg] of Object.entries(show.surfaces || {})) {
+    if (surface.startsWith("_")) continue;
+    const src = shaderCache[cfg.material] ||= await (await fetch(`../materials/${cfg.material}.fs`)).text();
+    layers[surface] = { layer: new IsfLayer(gl, src), material: cfg.material, rect: cfg.preview || [0, 0, 1, 1] };
+  }
+  tracks = buildTracks(show.steps || []);
+  duration = Math.max(0, ...(show.steps || []).map(s => (s.at || 0) + (s.seconds || 0))) + 1;
+  document.getElementById("scrub").max = duration;
+  clock = 0;
+}
+
+function render(t) {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const W = Math.floor(canvas.clientWidth * dpr), H = Math.floor(canvas.clientHeight * dpr);
+  for (const c of [canvas, overlay]) if (c.width !== W || c.height !== H) { c.width = W; c.height = H; }
+  audio.update(t);
+  gl.disable(gl.SCISSOR_TEST);
+  gl.viewport(0, 0, W, H); gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+  // Projectors add light, so layers composite additively.
+  gl.enable(gl.BLEND); gl.blendFunc(gl.CONSTANT_ALPHA, gl.ONE);
+
+  const ctx = overlay.getContext("2d");
+  ctx.clearRect(0, 0, W, H);
+  const showOutlines = document.getElementById("outlines").checked;
+
+  for (const [surface, L] of Object.entries(layers)) {
+    for (const [key, track] of Object.entries(tracks)) {
+      if (!key.startsWith("set:")) continue;
+      const [mat, param] = key.slice(4).split(".");
+      if (mat.toLowerCase() !== L.material.toLowerCase()) continue;
+      const v = valueAt(track, t, false);
+      const input = L.layer.input(param);
+      if (v !== undefined && input) L.layer.values[input.NAME] = v;
+    }
+    const opacity = valueAt(tracks["opacity:" + surface] || [], t, true);
+    const [x, y, w, h] = L.rect;
+    const px = [Math.round(x * W), Math.round((1 - y - h) * H), Math.round(w * W), Math.round(h * H)];
+    if (opacity > 0.001) {
+      gl.blendColor(0, 0, 0, opacity);
+      L.layer.render(t, px, audio);
+    }
+    if (showOutlines && (w < 1 || h < 1)) {
+      ctx.strokeStyle = "rgba(255,255,255,0.25)"; ctx.setLineDash([4 * dpr, 4 * dpr]); ctx.lineWidth = dpr;
+      ctx.strokeRect(x * W, y * H, w * W, h * H);
+      ctx.fillStyle = "rgba(255,255,255,0.4)"; ctx.font = `${11 * dpr}px system-ui`;
+      ctx.fillText(surface, x * W + 4 * dpr, y * H - 4 * dpr);
+    }
+  }
+  document.getElementById("time").textContent = `${t.toFixed(1)} / ${duration.toFixed(1)}s`;
+  document.getElementById("scrub").value = t;
+}
+
+function tick() {
+  const now = performance.now();
+  if (playing) { clock += (now - last) / 1000; if (clock > duration) clock = 0; }
+  last = now;
+  render(clock);
+  requestAnimationFrame(tick);
+}
+
+document.getElementById("play").onclick = e => { playing = !playing; e.target.textContent = playing ? "Pause" : "Play"; };
+document.getElementById("scrub").oninput = e => { clock = +e.target.value; };
+document.getElementById("pick").onchange = e => loadShow(e.target.value).catch(err => fail(String(err.message || err)));
+
+try {
+  const names = await listShows();
+  const pick = document.getElementById("pick");
+  for (const n of names) { const o = document.createElement("option"); o.value = o.textContent = n; pick.appendChild(o); }
+  const first = qs.get("show") || (names.includes("koi_frame") ? "koi_frame" : names[0]);
+  pick.value = first;
+  await loadShow(first);
+  if (qs.has("t")) { clock = +qs.get("t"); render(clock); }
+  else requestAnimationFrame(tick);
+  window.__isfReady = true;
+} catch (e) { fail(String(e.message || e)); }
+</script>
+</body>
+</html>

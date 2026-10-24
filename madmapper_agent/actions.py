@@ -62,29 +62,60 @@ def send_raw(osc: OscSender, address: str, args: list[OscArg] | None = None) -> 
     return f"Sent {address} {args or []}"
 
 
-def _send_parameter(osc: OscSender, book: AddressBook, library, name: str, value: float):
-    """Clamp to the shader's range, rescale if configured, and send."""
-    address = book.parameter_address(name)
-    spec = library.input(name) if library else None
-    if spec:
+
+def split_parameter(name: str, default_material: str | None = None) -> tuple[str | None, str]:
+    """"GridSweep.progress" -> ("GridSweep", "progress"); bare names use the default."""
+    if "." in name:
+        material, param = name.split(".", 1)
+        return material.strip(), param.strip()
+    return default_material, name.strip()
+
+
+def resolve_parameter(book: AddressBook, catalog, name: str, default_material: str | None = None):
+    """Return (address, converter) for a parameter, checking it exists in the shader.
+
+    The converter clamps a value to the shader's range and rescales it to 0-1
+    when addresses.json sets parameter_scale to "normalized".
+    """
+    material, param = split_parameter(name, default_material)
+    spec = None
+    if material and catalog is not None and catalog.material_name(material):
+        material = catalog.material_name(material)
+        spec = catalog.spec(material, param)
+        if spec is None:
+            raise ValueError(f"{material} has no parameter '{param}'")
+        param = spec.name
+    address = book.parameter_address(param, material)
+
+    def convert(value):
+        if spec is None:
+            return value
         value = spec.clamp(value)
-        if book.parameter_scale == "normalized":
-            value = spec.normalize(value)
-    osc.send(address, value)
-    return address, value
+        return spec.normalize(value) if book.parameter_scale == "normalized" else value
+
+    return address, convert
 
 
-def set_parameter(osc: OscSender, book: AddressBook, library, name: str, value: float) -> str:
-    address, sent = _send_parameter(osc, book, library, name, value)
-    return f"Set {address} to {sent:g}"
+def _fmt(value) -> str:
+    if isinstance(value, float):
+        return f"{value:g}"
+    return str(value)
 
 
-def apply_preset(osc: OscSender, book: AddressBook, library, name: str) -> str:
+def set_parameter(osc: OscSender, book: AddressBook, catalog, name: str, value,
+                  default_material: str | None = None) -> str:
+    address, convert = resolve_parameter(book, catalog, name, default_material)
+    sent = convert(value)
+    osc.send(address, sent)
+    return f"Set {address} to {_fmt(sent)}"
+
+
+def apply_preset(osc: OscSender, book: AddressBook, catalog, library, name: str) -> str:
     preset = library.get(name)
     sent, missing = [], []
     for param, value in preset.values.items():
         try:
-            _send_parameter(osc, book, library, param, value)
+            set_parameter(osc, book, catalog, param, value, library.material)
             sent.append(param)
         except KeyError:
             missing.append(param)

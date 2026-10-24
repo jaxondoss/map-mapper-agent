@@ -1,0 +1,71 @@
+{
+  "description": "Two holographic hands reach in from the sides, pinch toward the frame, then dissolve into sparks.",
+  "surfaces": {
+    "_comment": "Each show surface is a MadMapper surface (friendly name from addresses.json) carrying one material. 'preview' is its rectangle [x, y, w, h] on a 16:9 stage (0-1, y down) for preview/show.html only.",
+    "hands": {
+      "material": "HoloHands",
+      "preview": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ]
+    }
+  },
+  "steps": [
+    {
+      "at": 0.0,
+      "set": "HoloHands.target",
+      "to": [
+        0.6,
+        0.62
+      ]
+    },
+    {
+      "at": 0.0,
+      "set": "HoloHands.reach",
+      "to": 0
+    },
+    {
+      "at": 0.0,
+      "set": "HoloHands.pinch",
+      "to": 0
+    },
+    {
+      "at": 0.0,
+      "set": "HoloHands.dissolve",
+      "to": 0
+    },
+    {
+      "at": 0.0,
+      "opacity": "hands",
+      "to": 1
+    },
+    {
+      "at": 0.0,
+      "set": "HoloHands.reach",
+      "from": 0,
+      "to": 1,
+      "seconds": 2.2
+    },
+    {
+      "at": 2.6,
+      "set": "HoloHands.pinch",
+      "from": 0,
+      "to": 1,
+      "seconds": 1.6
+    },
+    {
+      "at": 5.2,
+      "set": "HoloHands.dissolve",
+      "from": 0,
+      "to": 1,
+      "seconds": 1.4
+    },
+    {
+      "at": 6.7,
+      "opacity": "hands",
+      "to": 0
+    }
+  ]
+}

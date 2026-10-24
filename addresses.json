@@ -4,7 +4,11 @@
     "_comment": "Friendly name -> surface name as shown in MadMapper (becomes /surfaces/<Name>/opacity), or a full opacity address starting with /.",
     "front wall": "FrontWall",
     "left wall": "LeftWall",
-    "floor": "/surfaces/Floor/opacity"
+    "floor": "/surfaces/Floor/opacity",
+    "grid": "Grid",
+    "lampshade": "Lampshade",
+    "hands": "Hands",
+    "chain": "Chain"
   },
   "triggers": {
     "_comment": "Friendly name -> full OSC address of a button, cue or scene control. Paste the address from Copy OSC Address.",
@@ -12,20 +16,10 @@
     "blackout": "/master/blackout"
   },
   "parameters": {
-    "_comment": "Shader parameter name -> OSC address. Load materials/HandStringVisualizer.fs in MadMapper, right-click each slider, choose Copy OSC Address and paste it here. These example addresses are guesses.",
-    "sensitivity": "/materials/HandStringVisualizer/sensitivity",
-    "colorMode": "/materials/HandStringVisualizer/colorMode",
-    "hueShift": "/materials/HandStringVisualizer/hueShift",
-    "hueSpeed": "/materials/HandStringVisualizer/hueSpeed",
-    "saturation": "/materials/HandStringVisualizer/saturation",
-    "pullAmount": "/materials/HandStringVisualizer/pullAmount",
-    "pullSpeed": "/materials/HandStringVisualizer/pullSpeed",
-    "bassKick": "/materials/HandStringVisualizer/bassKick",
-    "stringWidth": "/materials/HandStringVisualizer/stringWidth",
-    "glow": "/materials/HandStringVisualizer/glow",
-    "sway": "/materials/HandStringVisualizer/sway",
-    "background": "/materials/HandStringVisualizer/background"
+    "_comment": "Optional explicit addresses, keyed Material.param (e.g. \"HoloHands.pinch\"). Anything not listed here uses parameter_address_template."
   },
+  "parameter_address_template": "/materials/{material}/{param}",
+  "_parameter_address_template_comment": "Guessed pattern. Right-click any shader slider in MadMapper, choose Copy OSC Address, and rewrite this template to match, using {material} for the shader's name and {param} for the slider's name.",
   "parameter_scale": "raw",
   "_parameter_scale_comment": "raw sends values in the shader's own range (sensitivity 0-4). If MadMapper's sliders jump to the max, set this to normalized to send 0-1 instead."
 }

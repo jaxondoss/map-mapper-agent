@@ -11,7 +11,9 @@ import anthropic
 from .addresses import AddressBook
 from .agent import DEFAULT_MODEL, MadMapperAgent
 from .osc import DEFAULT_HOST, DEFAULT_PORT, OscSender
+from .materials import Catalog
 from .presets import PresetLibrary
+from .shows import ShowError, ShowLibrary, run_show
 
 
 def _print_tool(name: str, inp: dict, output: str, is_error: bool) -> None:
@@ -29,6 +31,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"MadMapper OSC input port (default {DEFAULT_PORT})")
     p.add_argument("--addresses", default="addresses.json", help="Path to addresses.json")
     p.add_argument("--presets", default="presets.json", help="Path to presets.json (optional)")
+    p.add_argument("--materials", default="materials", help="Folder of .fs shader materials")
+    p.add_argument("--shows", default="shows", help="Folder of show scripts")
+    p.add_argument("--show", metavar="NAME", help="Play a show script directly (no Claude, no API key)")
     p.add_argument("--dry-run", action="store_true", help="Log OSC messages instead of sending them")
     p.add_argument("--model", default=DEFAULT_MODEL)
     p.add_argument("-v", "--verbose", action="store_true")
@@ -52,8 +57,24 @@ def main(argv: list[str] | None = None) -> int:
     except FileNotFoundError:
         library = None
 
+    catalog = Catalog.load(args.materials)
+    shows = ShowLibrary.load(args.shows)
     osc = OscSender(args.host, args.port, dry_run=args.dry_run)
-    agent = MadMapperAgent(osc, book, model=args.model, library=library, on_tool=_print_tool)
+
+    if args.show:
+        try:
+            show = shows.get(args.show)
+            print(f"Playing '{show.name}' ({show.duration:.1f}s)...", file=sys.stderr)
+            print(run_show(osc, book, show, catalog))
+        except (ShowError, KeyError) as exc:
+            print(f"Can't play show: {exc}", file=sys.stderr)
+            return 1
+        return 0
+
+    agent = MadMapperAgent(
+        osc, book, model=args.model, library=library, catalog=catalog, shows=shows,
+        on_tool=_print_tool,
+    )
 
     def run(text: str) -> None:
         try:

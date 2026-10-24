@@ -10,8 +10,10 @@ import anthropic
 
 from . import actions
 from .addresses import AddressBook, AddressError
+from .materials import Catalog
 from .osc import OscSender
 from .presets import PresetError, PresetLibrary
+from .shows import ShowError, ShowLibrary, run_show
 
 log = logging.getLogger(__name__)
 
@@ -84,16 +86,32 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "set_parameter",
         "description": (
-            "Set one visualizer shader parameter by its name, in the shader's own range. "
-            "Use for fine adjustments ('thicker string', 'more glow') after or instead of a preset."
+            "Set one shader parameter, in the shader's own range. Name it Material.param "
+            "(e.g. HoloHands.pinch); a bare name means the presets' material. Use for fine "
+            "adjustments ('thicker string', 'more glow') after or instead of a preset."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Shader parameter name, e.g. glow."},
+                "name": {"type": "string", "description": "Material.param, e.g. ChainHang.sway"},
                 "value": {"type": "number"},
             },
             "required": ["name", "value"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "run_show",
+        "description": (
+            "Play a timed show script: a sequence of fades, parameter ramps and triggers. "
+            "Blocks until the show finishes, so expect it to take the show's full length."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Show name from the configured list."},
+            },
+            "required": ["name"],
             "additionalProperties": False,
         },
     },
@@ -127,7 +145,11 @@ When you're done, reply with one or two short sentences saying what you sent.
 Configured names:
 {targets}
 
-{presets}"""
+{presets}
+
+{shows}
+
+{materials}"""
 
 
 class ToolInputError(ValueError):
@@ -144,7 +166,13 @@ def _require(inp: dict, key: str, kind: type | tuple[type, ...]) -> Any:
 
 
 def execute_tool(
-    osc: OscSender, book: AddressBook, name: str, inp: dict, library: PresetLibrary | None = None
+    osc: OscSender,
+    book: AddressBook,
+    name: str,
+    inp: dict,
+    library: PresetLibrary | None = None,
+    catalog: Catalog | None = None,
+    shows: ShowLibrary | None = None,
 ) -> str:
     """Run one tool call. Raises on bad input; the loop turns that into is_error."""
     number = (int, float)
@@ -163,14 +191,19 @@ def execute_tool(
         )
     if name == "trigger":
         return actions.trigger(osc, book, _require(inp, "name", str))
-    if name in ("apply_preset", "set_parameter") and library is None:
-        raise ToolInputError("no presets.json is loaded")
     if name == "apply_preset":
-        return actions.apply_preset(osc, book, library, _require(inp, "name", str))
+        if library is None:
+            raise ToolInputError("no presets.json is loaded")
+        return actions.apply_preset(osc, book, catalog, library, _require(inp, "name", str))
     if name == "set_parameter":
         return actions.set_parameter(
-            osc, book, library, _require(inp, "name", str), _require(inp, "value", number)
+            osc, book, catalog, _require(inp, "name", str), _require(inp, "value", number),
+            library.material if library else None,
         )
+    if name == "run_show":
+        if shows is None:
+            raise ToolInputError("no shows are loaded")
+        return run_show(osc, book, shows.get(_require(inp, "name", str)), catalog)
     if name == "send_raw_osc":
         args = inp.get("args") or []
         if not isinstance(args, list):
@@ -189,6 +222,8 @@ class MadMapperAgent:
         client: anthropic.Anthropic | None = None,
         model: str = DEFAULT_MODEL,
         library: PresetLibrary | None = None,
+        catalog: Catalog | None = None,
+        shows: ShowLibrary | None = None,
         on_tool: Callable[[str, dict, str, bool], None] | None = None,
     ):
         self.osc = osc
@@ -197,9 +232,13 @@ class MadMapperAgent:
         self.model = model
         self.on_tool = on_tool
         self.library = library
+        self.catalog = catalog
+        self.shows = shows
         self.system = SYSTEM_PROMPT.format(
             targets=book.describe(),
             presets=library.describe() if library else "Presets: (none loaded)",
+            shows=shows.describe() if shows else "Shows: (none loaded)",
+            materials=catalog.describe() if catalog else "Materials: (none loaded)",
         )
         self.messages: list[dict[str, Any]] = []
 
@@ -238,9 +277,12 @@ class MadMapperAgent:
             results = []
             for block in tool_uses:
                 try:
-                    output = execute_tool(self.osc, self.book, block.name, block.input, self.library)
+                    output = execute_tool(
+                        self.osc, self.book, block.name, block.input,
+                        self.library, self.catalog, self.shows,
+                    )
                     is_error = False
-                except (ToolInputError, AddressError, PresetError, ValueError, OSError) as exc:
+                except (ToolInputError, AddressError, PresetError, ShowError, ValueError, OSError) as exc:
                     output = f"Error: {exc}"
                     is_error = True
                 log.info("%s %s -> %s", block.name, json.dumps(block.input), output)

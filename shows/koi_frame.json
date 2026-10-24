@@ -1,0 +1,203 @@
+{
+  "description": "The full sequence: a grid swings onto the wall and the lampshade lights up, holographic hands reach in and pinch the picture frame then dissolve, and a glowing chain drops to hang the frame.",
+  "surfaces": {
+    "_comment": "Each show surface is a MadMapper surface (friendly name from addresses.json) carrying one material. 'preview' is its rectangle [x, y, w, h] on a 16:9 stage (0-1, y down) for preview/show.html only.",
+    "grid": {
+      "material": "GridSweep",
+      "preview": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ]
+    },
+    "lampshade": {
+      "material": "SurfaceFill",
+      "preview": [
+        0.13,
+        0.5,
+        0.11,
+        0.13
+      ]
+    },
+    "hands": {
+      "material": "HoloHands",
+      "preview": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ]
+    },
+    "chain": {
+      "material": "ChainHang",
+      "preview": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ]
+    }
+  },
+  "steps": [
+    {
+      "at": 0.0,
+      "opacity": "hands",
+      "to": 0
+    },
+    {
+      "at": 0.0,
+      "opacity": "chain",
+      "to": 0
+    },
+    {
+      "at": 0.0,
+      "opacity": "grid",
+      "to": 1
+    },
+    {
+      "at": 0.0,
+      "set": "GridSweep.hinge",
+      "to": 1
+    },
+    {
+      "at": 0.0,
+      "set": "GridSweep.progress",
+      "from": 0,
+      "to": 1,
+      "seconds": 2.4
+    },
+    {
+      "at": 0.0,
+      "opacity": "lampshade",
+      "to": 0
+    },
+    {
+      "at": 3.6,
+      "set": "SurfaceFill.direction",
+      "to": 1
+    },
+    {
+      "at": 3.6,
+      "set": "SurfaceFill.progress",
+      "to": 0
+    },
+    {
+      "at": 3.6,
+      "opacity": "lampshade",
+      "to": 1
+    },
+    {
+      "at": 3.6,
+      "set": "SurfaceFill.progress",
+      "from": 0,
+      "to": 1,
+      "seconds": 1.4
+    },
+    {
+      "at": 6.4,
+      "opacity": "grid",
+      "to": 0,
+      "seconds": 0.5
+    },
+    {
+      "at": 6.4,
+      "opacity": "lampshade",
+      "to": 0,
+      "seconds": 0.6
+    },
+    {
+      "at": 7.0,
+      "set": "HoloHands.target",
+      "to": [
+        0.6,
+        0.62
+      ]
+    },
+    {
+      "at": 7.0,
+      "set": "HoloHands.reach",
+      "to": 0
+    },
+    {
+      "at": 7.0,
+      "set": "HoloHands.pinch",
+      "to": 0
+    },
+    {
+      "at": 7.0,
+      "set": "HoloHands.dissolve",
+      "to": 0
+    },
+    {
+      "at": 7.0,
+      "opacity": "hands",
+      "to": 1
+    },
+    {
+      "at": 7.0,
+      "set": "HoloHands.reach",
+      "from": 0,
+      "to": 1,
+      "seconds": 2.2
+    },
+    {
+      "at": 9.6,
+      "set": "HoloHands.pinch",
+      "from": 0,
+      "to": 1,
+      "seconds": 1.6
+    },
+    {
+      "at": 12.2,
+      "set": "HoloHands.dissolve",
+      "from": 0,
+      "to": 1,
+      "seconds": 1.4
+    },
+    {
+      "at": 13.7,
+      "opacity": "hands",
+      "to": 0
+    },
+    {
+      "at": 13.8,
+      "set": "ChainHang.frameCenter",
+      "to": [
+        0.6,
+        0.42
+      ]
+    },
+    {
+      "at": 13.8,
+      "set": "ChainHang.frameSize",
+      "to": [
+        0.22,
+        0.29
+      ]
+    },
+    {
+      "at": 13.8,
+      "set": "ChainHang.drop",
+      "to": 0
+    },
+    {
+      "at": 13.8,
+      "opacity": "chain",
+      "to": 1
+    },
+    {
+      "at": 13.8,
+      "set": "ChainHang.drop",
+      "from": 0,
+      "to": 1,
+      "seconds": 1.6
+    },
+    {
+      "at": 18.0,
+      "opacity": "chain",
+      "to": 0,
+      "seconds": 1.0
+    }
+  ]
+}

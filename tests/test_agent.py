@@ -75,13 +75,39 @@ def test_preset_tool(osc):
     from madmapper_agent.addresses import AddressBook
     from madmapper_agent.presets import PresetLibrary
 
-    library = PresetLibrary.load(Path(__file__).resolve().parent.parent / "presets.json")
-    book = AddressBook.from_dict({"parameters": {"glow": "/m/glow"}})
+    from madmapper_agent.materials import Catalog
+    from madmapper_agent.shows import ShowLibrary
+
+    root = Path(__file__).resolve().parent.parent
+    library = PresetLibrary.load(root / "presets.json")
+    book = AddressBook.from_dict({"parameters": {"HandStringVisualizer.glow": "/m/glow"}})
     client = FakeClient([
         reply("tool_use", tool_use("t1", "apply_preset", {"name": "neon"})),
         reply("end_turn", text("Switched to neon.")),
     ])
-    agent = MadMapperAgent(osc, book, client=client, library=library)
+    agent = MadMapperAgent(
+        osc, book, client=client, library=library,
+        catalog=Catalog.load(root / "materials"), shows=ShowLibrary.load(root / "shows"),
+    )
     assert agent.run("go neon") == "Switched to neon."
     assert osc.sent == [("/m/glow", [2.4])]
-    assert "neon" in client.calls[0]["system"] and "stringWidth" in client.calls[0]["system"]
+    system = client.calls[0]["system"]
+    assert "neon" in system and "stringWidth" in system
+    assert "koi_frame" in system and "HoloHands" in system
+
+
+def test_run_show_tool(book):
+    from types import SimpleNamespace
+
+    from madmapper_agent.osc import OscSender
+    from madmapper_agent.shows import Show, ShowLibrary
+
+    osc = OscSender(dry_run=True, sleep=lambda s: None)
+    shows = ShowLibrary({"intro": Show("intro", steps=[{"at": 0, "trigger": "intro scene"}])})
+    client = FakeClient([
+        reply("tool_use", tool_use("t1", "run_show", {"name": "Intro"})),
+        reply("end_turn", text("Played the intro.")),
+    ])
+    agent = MadMapperAgent(osc, book, client=client, shows=shows)
+    assert agent.run("play the intro") == "Played the intro."
+    assert osc.sent == [("/scenes/Intro/select", [1.0])]

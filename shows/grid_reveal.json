@@ -1,0 +1,82 @@
+{
+  "description": "A calibration grid swings in on a hinge and snaps flat onto the wall, then a light wipe switches the lampshade on. Both fade out at the end.",
+  "surfaces": {
+    "_comment": "Each show surface is a MadMapper surface (friendly name from addresses.json) carrying one material. 'preview' is its rectangle [x, y, w, h] on a 16:9 stage (0-1, y down) for preview/show.html only.",
+    "grid": {
+      "material": "GridSweep",
+      "preview": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ]
+    },
+    "lampshade": {
+      "material": "SurfaceFill",
+      "preview": [
+        0.13,
+        0.5,
+        0.11,
+        0.13
+      ]
+    }
+  },
+  "steps": [
+    {
+      "at": 0.0,
+      "opacity": "grid",
+      "to": 1
+    },
+    {
+      "at": 0.0,
+      "set": "GridSweep.hinge",
+      "to": 1
+    },
+    {
+      "at": 0.0,
+      "set": "GridSweep.progress",
+      "from": 0,
+      "to": 1,
+      "seconds": 2.4
+    },
+    {
+      "at": 0.0,
+      "opacity": "lampshade",
+      "to": 0
+    },
+    {
+      "at": 3.6,
+      "set": "SurfaceFill.direction",
+      "to": 1
+    },
+    {
+      "at": 3.6,
+      "set": "SurfaceFill.progress",
+      "to": 0
+    },
+    {
+      "at": 3.6,
+      "opacity": "lampshade",
+      "to": 1
+    },
+    {
+      "at": 3.6,
+      "set": "SurfaceFill.progress",
+      "from": 0,
+      "to": 1,
+      "seconds": 1.4
+    },
+    {
+      "at": 6.4,
+      "opacity": "grid",
+      "to": 0,
+      "seconds": 0.5
+    },
+    {
+      "at": 6.4,
+      "opacity": "lampshade",
+      "to": 0,
+      "seconds": 0.6
+    }
+  ]
+}

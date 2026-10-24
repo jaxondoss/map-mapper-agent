@@ -17,7 +17,8 @@ Faded the front wall up over 4 seconds and triggered the intro scene.
 | `fade` | A linear ramp at 30 steps per second. It blocks until the fade finishes. |
 | `trigger` | `1.0` to a button, cue or scene address set in `addresses.json` |
 | `apply_preset` | Every parameter of a named visualizer look (see below) |
-| `set_parameter` | One visualizer shader parameter |
+| `set_parameter` | One shader parameter, named `Material.param` (e.g. `HoloHands.pinch`) |
+| `run_show` | A timed show script: fades, parameter ramps and triggers on a timeline |
 | `send_raw_osc` | Any address and arguments you give it explicitly |
 
 MadMapper doesn't send values back over this one-way link, so a fade starts from the opposite end (0 when fading up, 1 when fading down) unless you say where it starts, e.g. *"fade the floor from 0.5 down to 0 over 3 seconds"*.
@@ -36,6 +37,7 @@ MadMapper doesn't send values back over this one-way link, so a fade starts from
 4. **Fill in `addresses.json`.** MadMapper only responds to addresses that have a matching OSC control. Right-click a parameter in MadMapper, choose **Copy OSC Address**, and paste the address in.
    - `surfaces`: friendly name → surface name (becomes `/surfaces/<Name>/opacity`), or a full opacity address that starts with `/`.
    - `triggers`: friendly name → full OSC address of a button, cue or scene control.
+   - `parameter_address_template`: the pattern for shader slider addresses, using `{material}` and `{param}`. Copy the OSC address of any one shader slider and rewrite the template to match; every shader parameter then works. Use the `parameters` section to override individual ones (keyed `Material.param`).
    - Keys that start with `_` are comments and are ignored.
 5. **Check your setup:**
    ```
@@ -50,11 +52,12 @@ madmapper-agent "hide the left wall"            # one instruction
 madmapper-agent                                 # interactive prompt; follow-ups keep context
 madmapper-agent --dry-run "blackout"            # log OSC instead of sending
 madmapper-agent --host 192.168.1.20 --port 8000 # MadMapper on another machine
+madmapper-agent --show koi_frame                # play a show script directly (no Claude, no API key)
 ```
 
 `--dry-run` still calls Claude (so it needs the API key). It only skips the UDP send.
 
-Options: `--addresses PATH`, `--presets PATH`, `--model` (default `claude-opus-5-5`), `-v` to log every OSC message.
+Options: `--addresses PATH`, `--presets PATH`, `--materials DIR`, `--shows DIR`, `--model` (default `claude-opus-5-5`), `-v` to log every OSC message.
 
 Requests to Claude turn on server-side refusal fallback: if a safety classifier declines a request, the API runs it again on a fallback model within the same call. To turn this off, remove `betas` and `fallbacks` from `MadMapperAgent._create` in `madmapper_agent/agent.py` and switch the call to `client.messages.create`.
 
@@ -71,7 +74,7 @@ Requests to Claude turn on server-side refusal fallback: if a safety classifier 
 ### Load it in MadMapper
 1. Drag `materials/HandStringVisualizer.fs` into MadMapper's media list and put it on a surface.
 2. Choose your audio input in MadMapper's audio settings. The shader's `waveform` and `spectrum` inputs read from it.
-3. Its sliders (Sensitivity, Palette, Glow and so on) appear in MadMapper. To control them with the agent, right-click each slider, choose **Copy OSC Address**, and paste the address into the `parameters` section of `addresses.json`. The addresses there now are guesses.
+3. Its sliders (Sensitivity, Palette, Glow and so on) appear in MadMapper. To control them with the agent, set `parameter_address_template` in `addresses.json` (see Setup). The template there now is a guess.
 
 ### Presets
 `presets.json` holds six named looks:
@@ -95,13 +98,59 @@ python3 -m http.server 8000
 ```
 Then open <http://localhost:8000/preview/>. You can play a demo beat, use your microphone, or play an audio file, and switch presets or move sliders live. Add `?preset=rave` to the address to open on a preset.
 
+## Effects from the reference video: grid, holographic hands, chain
+
+Four shaders and four show scripts recreate a projection-mapping sequence: a grid snaps onto the wall, the lampshade lights up, holographic hands reach in and pinch the picture frame, and a glowing chain drops to "hang" the frame.
+
+![koi_frame show, rendered in the browser preview](preview/koi_frame.png)
+
+### Materials
+| Shader | What it draws | Drive it with |
+|---|---|---|
+| `GridSweep.fs` | A glowing grid that swings in on a hinge and snaps flat onto the surface | `progress` 0→1; `hinge` picks the edge it swings from |
+| `SurfaceFill.fs` | Light that wipes across a surface, e.g. switching a lampshade "on" | `progress` 0→1; `direction` |
+| `HoloHands.fs` | Two 3D hands made of glowing dots that reach in, pinch, and dissolve into sparks | `reach`, `pinch`, `dissolve` (each 0→1); `target` is the pinch point |
+| `ChainHang.fs` | A glowing chain dropping to a clasp on a real picture frame, soft wall light, and a swaying shadow | `drop` 0→1; line `frameCenter`/`frameSize` up with the real frame |
+
+Each has a `loop` checkbox that plays its animation on its own, which is handy while you line things up in MadMapper.
+
+### Show scripts
+`shows/*.json` are timelines that play these materials over OSC:
+
+| Show | Length | What happens |
+|---|---|---|
+| `koi_frame` | 19s | The full sequence |
+| `grid_reveal` | 7s | Grid swings in, lampshade lights up, both fade out |
+| `holo_hands` | 7s | Hands reach in, pinch, dissolve |
+| `chain_hang` | 2s | Chain drops and stays up |
+
+Play one with `madmapper-agent --show koi_frame`, or ask the agent (*"play the hands bit"*). Each step does one thing at a time `at` (seconds):
+
+```json
+{"at": 0.0, "opacity": "grid", "to": 1}
+{"at": 0.0, "set": "GridSweep.progress", "from": 0, "to": 1, "seconds": 2.4}
+{"at": 3.0, "trigger": "intro scene"}
+{"at": 4.0, "osc": "/any/address", "args": [1]}
+```
+
+With `seconds` a step ramps (30 steps per second); without it, it jumps. A ramp without `from` continues from the value the show last sent. Values are clamped to the shader's ranges. A show that names an unknown surface, trigger or parameter is rejected before anything is sent, and `scripts/check_setup.py` checks every show.
+
+### Set it up in MadMapper
+1. Make four surfaces named **Grid**, **Lampshade**, **Hands** and **Chain** (or rename them in `addresses.json`). Map Grid, Hands and Chain over the wall, and Lampshade over the lampshade.
+2. Drag the matching `.fs` file onto each surface: GridSweep → Grid, SurfaceFill → Lampshade, HoloHands → Hands, ChainHang → Chain.
+3. Turn on `loop` on ChainHang and adjust `frameCenter` and `frameSize` until the clasp sits on your frame's top edge and the black cut-out covers the frame. Do the same with HoloHands' `target`. Then copy those values into the `ChainHang.frameCenter`, `ChainHang.frameSize` and `HoloHands.target` steps of the shows, and turn `loop` off again.
+4. Run `madmapper-agent --dry-run --show koi_frame` to see the messages, then run it without `--dry-run`.
+
+### Preview a show in the browser
+With `python3 -m http.server 8000` running, open <http://localhost:8000/preview/show.html>. It plays any show with all its layers combined the way a projector adds light, with a timeline you can scrub. Rectangles marked `preview` in each show file set where each surface sits on the stage.
+
 ## Development
 
 ```
 pytest
 ```
 
-The tests cover address lookup, every action, the presets (each value checked against the shader's ranges), a real UDP round trip to a local OSC server, and the agent loop with a scripted fake client. They need no network access or API key.
+The tests cover address lookup, every action, the presets (each value checked against the shader's ranges), every shader header, the show compiler and player (with every bundled show compiled against the example config), a real UDP round trip to a local OSC server, and the agent loop with a scripted fake client. They need no network access or API key.
 
 ## Layout
 
@@ -110,11 +159,14 @@ madmapper_agent/
   addresses.py   friendly-name lookup (addresses.json)
   osc.py         UDP sender with dry-run mode
   actions.py     set_opacity, fade, trigger, send_raw, presets
-  presets.py     presets.json and shader input ranges
+  materials.py   reads shader (.fs) inputs and their ranges
+  presets.py     presets.json
+  shows.py       show scripts: compile and play timelines
   agent.py       tool definitions and the Claude tool-use loop
   cli.py         command-line entry point
-materials/HandStringVisualizer.fs   the visualizer shader
-preview/         browser preview for the shader
+materials/       shaders: HandStringVisualizer, GridSweep, SurfaceFill, HoloHands, ChainHang
+shows/           show scripts (timelines)
+preview/         browser previews: index.html (one shader), show.html (a show)
 scripts/check_setup.py
 tests/
 addresses.json   example mappings, replace with your own

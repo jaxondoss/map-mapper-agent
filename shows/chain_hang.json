@@ -1,0 +1,50 @@
+{
+  "description": "A glowing chain drops from the ceiling line to 'hang' the picture frame, with soft wall light and a swaying shadow. Stays up until you fade the chain surface out.",
+  "surfaces": {
+    "_comment": "Each show surface is a MadMapper surface (friendly name from addresses.json) carrying one material. 'preview' is its rectangle [x, y, w, h] on a 16:9 stage (0-1, y down) for preview/show.html only.",
+    "chain": {
+      "material": "ChainHang",
+      "preview": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ]
+    }
+  },
+  "steps": [
+    {
+      "at": 0.0,
+      "set": "ChainHang.frameCenter",
+      "to": [
+        0.6,
+        0.42
+      ]
+    },
+    {
+      "at": 0.0,
+      "set": "ChainHang.frameSize",
+      "to": [
+        0.22,
+        0.29
+      ]
+    },
+    {
+      "at": 0.0,
+      "set": "ChainHang.drop",
+      "to": 0
+    },
+    {
+      "at": 0.0,
+      "opacity": "chain",
+      "to": 1
+    },
+    {
+      "at": 0.0,
+      "set": "ChainHang.drop",
+      "from": 0,
+      "to": 1,
+      "seconds": 1.6
+    }
+  ]
+}

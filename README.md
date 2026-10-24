@@ -111,8 +111,9 @@ Four shaders and four show scripts recreate a projection-mapping sequence: a gri
 | `SurfaceFill.fs` | Light that wipes across a surface, e.g. switching a lampshade "on" | `progress` 0→1; `direction` |
 | `HoloHands.fs` | Two 3D hands made of glowing dots that reach in, pinch, and dissolve into sparks | `reach`, `pinch`, `dissolve` (each 0→1); `target` is the pinch point |
 | `ChainHang.fs` | A glowing chain dropping to a clasp on a real picture frame, soft wall light, and a swaying shadow | `drop` 0→1; line `frameCenter`/`frameSize` up with the real frame |
+| `IcarusFall.fs` | The whole Icarus Falling scene (below), live in the shader | plays on its own; `speed`, `timeOffset`, `projector`, `glow`, `intensity` |
 
-Each has a `loop` checkbox that plays its animation on its own, which is handy while you line things up in MadMapper.
+The first four each have a `loop` checkbox that plays its animation on its own, which is handy while you line things up in MadMapper.
 
 ### Show scripts
 `shows/*.json` are timelines that play these materials over OSC:
@@ -176,6 +177,8 @@ How it's built:
 
 Same controls as the arm scene (Space, R, 1–6, `?dev`, `?t=`). Add `?projector` to drop the wall and sky glow, leaving pure light on black so unlit areas of the real wall stay dark; record from this mode for MadMapper. The figure is procedural: 21 joints of tapered capsules, skinned with blended weights at the joints. The 24 feathers are instanced vanes with fwidth() outlines, rachis and barbs. Wax drips and spray are crisp instanced discs. The sea is drawn in the wall shader as a log-spaced wave lattice with ripple rings on the water plane.
 
+`materials/IcarusFall.fs` is the same scene as an ISF material, so it runs inside MadMapper with no video file: drag it into the media list and put it on a surface. It loops every 20 seconds on its own. `speed` scales time, `timeOffset` picks where the loop starts, `projector` (on by default) keeps everything but the light black, and `glow` and `intensity` set the bloom and the overall brightness. Every pixel works out the pose for the current time and ray traces the figure (18 tapered capsules with their lattice and rim, front and back faces), the 24 feather vanes, the wax and the spray, so it needs a reasonable GPU at 1080p; lower the material's resolution in MadMapper if it stutters. Values the browser computes up front (the colors after ACES pre-compensation, the rest pose, each feather's pose when it tears loose, the wax sources and the splash point) are baked into the shader, and the wall at z = 0 hides whatever swings behind it, as in the browser. Bloom is approximated with halos.
+
 ## Development
 
 ```
@@ -196,7 +199,7 @@ madmapper_agent/
   shows.py       show scripts: compile and play timelines
   agent.py       tool definitions and the Claude tool-use loop
   cli.py         command-line entry point
-materials/       shaders: HandStringVisualizer, GridSweep, SurfaceFill, HoloHands, ChainHang
+materials/       shaders: HandStringVisualizer, GridSweep, SurfaceFill, HoloHands, ChainHang, IcarusFall
 shows/           show scripts (timelines)
 scenes/          standalone rendered pieces (Three.js)
 preview/         browser previews: index.html (one shader), show.html (a show)
